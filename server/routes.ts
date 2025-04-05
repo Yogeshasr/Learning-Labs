@@ -1,21 +1,56 @@
-import type { Express } from "express";
+import { type Express, Request, Response, NextFunction } from "express"; // Keep original import
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth } from "./auth";
-import { z } from "zod";
-import { 
-  insertCourseSchema, insertEnrollmentSchema, insertModuleSchema, 
-  insertLessonSchema, insertAssessmentSchema, insertQuestionSchema,
-  insertAssessmentAttemptSchema, insertGroupSchema, insertGroupMemberSchema,
-  insertCourseAccessSchema, insertLessonProgressSchema, insertActivityLogSchema
-} from "@shared/schema";
+import { Prisma } from "@prisma/client"; // Import Prisma namespace
+import multer from 'multer'; // Import multer
+import path from 'path';     // Import path for handling file paths
+import fs from 'fs';         // Import fs for creating directories
+// Zod validation removed for now, can be added back based on Prisma types
+// import { z } from "zod";
+// Drizzle schema imports removed
+// import { ... } from "@shared/schema";
+import type { User, Course, Module, Lesson, Enrollment, Assessment, Question, AssessmentAttempt, Group, GroupMember, CourseAccess, LessonProgress, ActivityLog } from ".prisma/client"; // Import Prisma types
+
+// --- Multer Configuration for Video Uploads ---
+const videoUploadDir = path.join('..', 'uploads', 'videos'); // Define upload directory relative to dist/server
+
+// Ensure upload directory exists
+if (!fs.existsSync(videoUploadDir)) {
+  fs.mkdirSync(videoUploadDir, { recursive: true });
+}
+
+const videoStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, videoUploadDir); // Save to uploads/videos
+  },
+  filename: function (req, file, cb) {
+    // Create a unique filename: fieldname-timestamp.extension
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const uploadVideo = multer({ 
+  storage: videoStorage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // Example: Limit file size to 100MB
+  fileFilter: function (req: any, file: Express.Multer.File, cb: multer.FileFilterCallback) { // Revert to 'any' for req as workaround
+    // Accept only video files
+    if (!file.mimetype.startsWith('video/')) {
+      return cb(new Error('Only video files are allowed!'));
+    }
+    cb(null, true);
+  } 
+});
+// --- End Multer Configuration ---
+
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Set up authentication
   await setupAuth(app);
 
   // Helper middleware to check authentication
-  const isAuthenticated = (req, res, next) => {
+  const isAuthenticated = (req: Request, res: Response, next: NextFunction) => {
     if (req.isAuthenticated()) {
       return next();
     }
@@ -23,11 +58,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   };
 
   // Helper middleware to check role
-  const hasRole = (roles: string[]) => (req, res, next) => {
+  const hasRole = (roles: string[]) => (req: Request, res: Response, next: NextFunction) => {
     if (!req.isAuthenticated()) {
       return res.status(401).json({ message: "Unauthorized" });
     }
-    if (roles.includes(req.user.role)) {
+    // We can safely assert req.user exists here due to isAuthenticated check above
+    if (req.user && roles.includes(req.user.role)) {
       return next();
     }
     res.status(403).json({ message: "Forbidden" });
@@ -37,6 +73,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/users', isAuthenticated, hasRole(['admin']), async (req, res) => {
     try {
       const users = await storage.getUsers();
+      // Ensure password is not included if the type still has it (Prisma select can exclude it)
       const usersWithoutPasswords = users.map(({ password, ...user }) => user);
       res.json(usersWithoutPasswords);
     } catch (error) {
@@ -59,12 +96,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/courses/:id', isAuthenticated, async (req, res) => {
     try {
       const courseId = parseInt(req.params.id);
+      if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid course ID" });
+      }
       const course = await storage.getCourse(courseId);
-      
-      if (!course) {
+
+      if (!course) { // Prisma returns null if not found
         return res.status(404).json({ message: "Course not found" });
       }
-      
+
       res.json(course);
     } catch (error) {
       console.error("Error fetching course:", error);
@@ -74,20 +114,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/courses', isAuthenticated, hasRole(['contributor', 'admin']), async (req, res) => {
     try {
-      const courseData = insertCourseSchema.parse(req.body);
+      // Zod validation removed - add back if needed
+      // const courseData = insertCourseSchema.parse(req.body);
+      const { title, description, thumbnail, duration, difficulty, status } = req.body;
+
+      // Basic validation (replace with Zod/other validation if needed)
+      if (!title || !description) {
+          return res.status(400).json({ message: "Title and description are required" });
+      }
+
       const newCourse = await storage.createCourse({
-        ...courseData,
-        instructorId: req.user.id,
+        title,
+        description,
+        thumbnail: thumbnail || null,
+        duration: duration || null,
+        difficulty: difficulty || null,
+        status: status || 'draft',
+        instructorId: req.user!.id, // Assert req.user exists
       });
-      
+
       res.status(201).json(newCourse);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... } // Add back Zod error handling if used
       console.error("Error creating course:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -96,28 +144,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.put('/api/courses/:id', isAuthenticated, hasRole(['contributor', 'admin']), async (req, res) => {
     try {
       const courseId = parseInt(req.params.id);
+       if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid course ID" });
+      }
       const course = await storage.getCourse(courseId);
-      
+
       if (!course) {
         return res.status(404).json({ message: "Course not found" });
       }
-      
+
       // Only allow the instructor or admin to update the course
-      if (course.instructorId !== req.user.id && req.user.role !== 'admin') {
+      if (course.instructorId !== req.user!.id && req.user!.role !== 'admin') { // Assert req.user exists
         return res.status(403).json({ message: "Forbidden" });
       }
-      
-      const courseData = insertCourseSchema.partial().parse(req.body);
+
+      // Zod validation removed
+      // const courseData = insertCourseSchema.partial().parse(req.body);
+      const courseData = req.body; // Use raw body, rely on Prisma for type safety for now
       const updatedCourse = await storage.updateCourse(courseId, courseData);
-      
+
+      if (!updatedCourse) { // Handle case where update fails (e.g., record gone)
+         return res.status(404).json({ message: "Course not found or update failed" });
+      }
+
       res.json(updatedCourse);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error updating course:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -126,19 +178,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete('/api/courses/:id', isAuthenticated, hasRole(['contributor', 'admin']), async (req, res) => {
     try {
       const courseId = parseInt(req.params.id);
-      const course = await storage.getCourse(courseId);
-      
-      if (!course) {
-        return res.status(404).json({ message: "Course not found" });
+       if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid course ID" });
       }
-      
+      // Check existence and permissions before deleting
+      const course = await storage.getCourse(courseId);
+
+      if (!course) {
+        // Already gone, arguably a success for DELETE idempotency
+        return res.status(204).send();
+      }
+
       // Only allow the instructor or admin to delete the course
-      if (course.instructorId !== req.user.id && req.user.role !== 'admin') {
+      if (course.instructorId !== req.user!.id && req.user!.role !== 'admin') { // Assert req.user exists
         return res.status(403).json({ message: "Forbidden" });
       }
-      
-      await storage.deleteCourse(courseId);
-      
+
+      const deleted = await storage.deleteCourse(courseId);
+      if (!deleted) {
+         // This might happen in race conditions, treat as not found
+         return res.status(404).json({ message: "Course not found or delete failed" });
+      }
+
       res.status(204).send();
     } catch (error) {
       console.error("Error deleting course:", error);
@@ -149,19 +210,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Enrollment routes
   app.get('/api/enrollments', isAuthenticated, async (req, res) => {
     try {
-      const enrollments = await storage.getEnrollmentsByUser(req.user.id);
-      
-      // Get the course details for each enrollment
+      const enrollments = await storage.getEnrollmentsByUser(req.user!.id); // Assert req.user exists
+
+      // Prisma can include related data, let's try fetching it directly
+      // This requires modifying the storage method or doing it here.
+      // For now, keep the separate fetches.
       const enrollmentsWithCourses = await Promise.all(
         enrollments.map(async (enrollment) => {
           const course = await storage.getCourse(enrollment.courseId);
           return {
             ...enrollment,
-            course,
+            course, // course might be null if deleted, handle in frontend
           };
         })
       );
-      
+
       res.json(enrollmentsWithCourses);
     } catch (error) {
       console.error("Error fetching enrollments:", error);
@@ -171,46 +234,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/enrollments', isAuthenticated, async (req, res) => {
     try {
-      const enrollmentData = insertEnrollmentSchema.parse({
-        ...req.body,
-        userId: req.user.id,
-      });
-      
+      // Zod validation removed
+      // const enrollmentData = insertEnrollmentSchema.parse({ ... });
+      const { courseId } = req.body;
+      const userId = req.user!.id; // Assert req.user exists
+
+      if (typeof courseId !== 'number') {
+          return res.status(400).json({ message: "Valid courseId is required" });
+      }
+
       // Check if the course exists
-      const course = await storage.getCourse(enrollmentData.courseId);
+      const course = await storage.getCourse(courseId);
       if (!course) {
         return res.status(404).json({ message: "Course not found" });
       }
-      
-      // Check if the user is already enrolled
-      const userEnrollments = await storage.getEnrollmentsByUser(req.user.id);
+
+      // Check if the user is already enrolled (could be done in storage layer with unique constraint)
+      const userEnrollments = await storage.getEnrollmentsByUser(userId);
       const existingEnrollment = userEnrollments.find(
-        (enrollment) => enrollment.courseId === enrollmentData.courseId
+        (enrollment) => enrollment.courseId === courseId
       );
-      
+
       if (existingEnrollment) {
         return res.status(400).json({ message: "Already enrolled in this course" });
       }
-      
-      const newEnrollment = await storage.createEnrollment(enrollmentData);
-      
+
+      const newEnrollment = await storage.createEnrollment({ userId, courseId });
+
       // Log the activity
       await storage.createActivityLog({
-        userId: req.user.id,
+        userId: userId,
         action: "enrolled",
         resourceType: "course",
-        resourceId: enrollmentData.courseId,
-        metadata: {},
+        resourceId: courseId,
+        metadata: {}, // Prisma expects JsonNull or an object
       });
-      
+
       res.status(201).json(newEnrollment);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error creating enrollment:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -220,8 +282,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/courses/:courseId/modules', isAuthenticated, async (req, res) => {
     try {
       const courseId = parseInt(req.params.courseId);
+       if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid course ID" });
+      }
       const modules = await storage.getModulesByCourse(courseId);
-      
+
       res.json(modules);
     } catch (error) {
       console.error("Error fetching modules:", error);
@@ -231,28 +296,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/modules', isAuthenticated, hasRole(['contributor', 'admin']), async (req, res) => {
     try {
-      const moduleData = insertModuleSchema.parse(req.body);
-      
+      // Zod validation removed
+      // const moduleData = insertModuleSchema.parse(req.body);
+      const { courseId, title, position } = req.body;
+
+      if (typeof courseId !== 'number' || !title || typeof position !== 'number') {
+          return res.status(400).json({ message: "Valid courseId, title, and position are required" });
+      }
+
       // Check if the course exists and if the user is the instructor
-      const course = await storage.getCourse(moduleData.courseId);
+      const course = await storage.getCourse(courseId);
       if (!course) {
         return res.status(404).json({ message: "Course not found" });
       }
-      
-      if (course.instructorId !== req.user.id && req.user.role !== 'admin') {
+
+      if (course.instructorId !== req.user!.id && req.user!.role !== 'admin') { // Assert req.user exists
         return res.status(403).json({ message: "Forbidden" });
       }
-      
-      const newModule = await storage.createModule(moduleData);
-      
+
+      const newModule = await storage.createModule({ courseId, title, position });
+
       res.status(201).json(newModule);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error creating module:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -262,8 +328,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/modules/:moduleId/lessons', isAuthenticated, async (req, res) => {
     try {
       const moduleId = parseInt(req.params.moduleId);
+       if (isNaN(moduleId)) {
+        return res.status(400).json({ message: "Invalid module ID" });
+      }
       const lessons = await storage.getLessonsByModule(moduleId);
-      
+
       res.json(lessons);
     } catch (error) {
       console.error("Error fetching lessons:", error);
@@ -273,34 +342,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/lessons', isAuthenticated, hasRole(['contributor', 'admin']), async (req, res) => {
     try {
-      const lessonData = insertLessonSchema.parse(req.body);
-      
+      // Zod validation removed
+      // const lessonData = insertLessonSchema.parse(req.body);
+      const { moduleId, title, content, videoUrl, duration, position } = req.body;
+
+       if (typeof moduleId !== 'number' || !title || typeof position !== 'number') {
+          return res.status(400).json({ message: "Valid moduleId, title, and position are required" });
+      }
+
       // Check if the module exists
-      const module = await storage.getModule(lessonData.moduleId);
+      const module = await storage.getModule(moduleId);
       if (!module) {
         return res.status(404).json({ message: "Module not found" });
       }
-      
+
       // Check if the user is the instructor of the course
       const course = await storage.getCourse(module.courseId);
       if (!course) {
-        return res.status(404).json({ message: "Course not found" });
+        // Should not happen if module exists, but good practice
+        return res.status(404).json({ message: "Associated course not found" });
       }
-      
-      if (course.instructorId !== req.user.id && req.user.role !== 'admin') {
+
+      if (course.instructorId !== req.user!.id && req.user!.role !== 'admin') { // Assert req.user exists
         return res.status(403).json({ message: "Forbidden" });
       }
-      
-      const newLesson = await storage.createLesson(lessonData);
-      
+
+      const newLesson = await storage.createLesson({
+          moduleId,
+          title,
+          content: content || null,
+          videoUrl: videoUrl || null,
+          duration: duration || null,
+          position
+      });
+
       res.status(201).json(newLesson);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error creating lesson:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -310,8 +388,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/modules/:moduleId/assessments', isAuthenticated, async (req, res) => {
     try {
       const moduleId = parseInt(req.params.moduleId);
+       if (isNaN(moduleId)) {
+        return res.status(400).json({ message: "Invalid module ID" });
+      }
+      // Note: Prisma storage method handles potential null moduleId
       const assessments = await storage.getAssessmentsByModule(moduleId);
-      
+
       res.json(assessments);
     } catch (error) {
       console.error("Error fetching assessments:", error);
@@ -321,36 +403,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/assessments', isAuthenticated, hasRole(['contributor', 'admin']), async (req, res) => {
     try {
-      const assessmentData = insertAssessmentSchema.parse(req.body);
-      
-      // If moduleId is provided, check if the module exists
-      if (assessmentData.moduleId) {
-        const module = await storage.getModule(assessmentData.moduleId);
+      // Zod validation removed
+      // const assessmentData = insertAssessmentSchema.parse(req.body);
+      const { title, description, moduleId, timeLimit, passingScore } = req.body;
+
+      if (!title) {
+           return res.status(400).json({ message: "Assessment title is required" });
+      }
+      const moduleIdNum = moduleId ? parseInt(moduleId) : null;
+       if (moduleId && isNaN(moduleIdNum as number)) {
+           return res.status(400).json({ message: "Invalid module ID provided" });
+       }
+
+      // If moduleId is provided, check if the module exists and permissions
+      if (moduleIdNum) {
+        const module = await storage.getModule(moduleIdNum);
         if (!module) {
           return res.status(404).json({ message: "Module not found" });
         }
-        
+
         // Check if the user is the instructor of the course
         const course = await storage.getCourse(module.courseId);
         if (!course) {
-          return res.status(404).json({ message: "Course not found" });
+          return res.status(404).json({ message: "Associated course not found" });
         }
-        
-        if (course.instructorId !== req.user.id && req.user.role !== 'admin') {
+
+        if (course.instructorId !== req.user!.id && req.user!.role !== 'admin') { // Assert req.user exists
           return res.status(403).json({ message: "Forbidden" });
         }
       }
-      
-      const newAssessment = await storage.createAssessment(assessmentData);
-      
+
+      const newAssessment = await storage.createAssessment({
+          title,
+          description: description || null,
+          moduleId: moduleIdNum,
+          timeLimit: timeLimit || null,
+          passingScore: passingScore || null
+      });
+
       res.status(201).json(newAssessment);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error creating assessment:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -360,8 +453,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/assessments/:assessmentId/questions', isAuthenticated, async (req, res) => {
     try {
       const assessmentId = parseInt(req.params.assessmentId);
+       if (isNaN(assessmentId)) {
+        return res.status(400).json({ message: "Invalid assessment ID" });
+      }
       const questions = await storage.getQuestionsByAssessment(assessmentId);
-      
+
       res.json(questions);
     } catch (error) {
       console.error("Error fetching questions:", error);
@@ -371,41 +467,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/questions', isAuthenticated, hasRole(['contributor', 'admin']), async (req, res) => {
     try {
-      const questionData = insertQuestionSchema.parse(req.body);
-      
+      // Zod validation removed
+      // const questionData = insertQuestionSchema.parse(req.body);
+      const { assessmentId, questionText, questionType, options, correctAnswer, explanation, points, position } = req.body;
+
+      if (typeof assessmentId !== 'number' || !questionText || !questionType || typeof position !== 'number') {
+          return res.status(400).json({ message: "Valid assessmentId, questionText, questionType, and position are required" });
+      }
+
       // Check if the assessment exists
-      const assessment = await storage.getAssessment(questionData.assessmentId);
+      const assessment = await storage.getAssessment(assessmentId);
       if (!assessment) {
         return res.status(404).json({ message: "Assessment not found" });
       }
-      
+
       // If the assessment is linked to a module, check permissions
       if (assessment.moduleId) {
         const module = await storage.getModule(assessment.moduleId);
         if (!module) {
-          return res.status(404).json({ message: "Module not found" });
+          // Should not happen, but check anyway
+          return res.status(404).json({ message: "Associated module not found" });
         }
-        
+
         const course = await storage.getCourse(module.courseId);
         if (!course) {
-          return res.status(404).json({ message: "Course not found" });
+          return res.status(404).json({ message: "Associated course not found" });
         }
-        
-        if (course.instructorId !== req.user.id && req.user.role !== 'admin') {
+
+        if (course.instructorId !== req.user!.id && req.user!.role !== 'admin') { // Assert req.user exists
           return res.status(403).json({ message: "Forbidden" });
         }
       }
-      
-      const newQuestion = await storage.createQuestion(questionData);
-      
+
+      const newQuestion = await storage.createQuestion({
+          assessmentId,
+          questionText,
+          questionType,
+          options: options || Prisma.JsonNull, // Use Prisma.JsonNull if options is null/undefined
+          correctAnswer: correctAnswer || null,
+          explanation: explanation || null,
+          points: points || 1,
+          position
+      });
+
       res.status(201).json(newQuestion);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error creating question:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -414,36 +521,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Assessment attempts
   app.post('/api/assessment-attempts', isAuthenticated, async (req, res) => {
     try {
-      const attemptData = insertAssessmentAttemptSchema.parse({
-        ...req.body,
-        userId: req.user.id,
-      });
-      
+      // Zod validation removed
+      // const attemptData = insertAssessmentAttemptSchema.parse({ ... });
+      const { assessmentId } = req.body;
+      const userId = req.user!.id; // Assert req.user exists
+
+       if (typeof assessmentId !== 'number') {
+          return res.status(400).json({ message: "Valid assessmentId is required" });
+      }
+
       // Check if the assessment exists
-      const assessment = await storage.getAssessment(attemptData.assessmentId);
+      const assessment = await storage.getAssessment(assessmentId);
       if (!assessment) {
         return res.status(404).json({ message: "Assessment not found" });
       }
-      
-      const newAttempt = await storage.createAssessmentAttempt(attemptData);
-      
+
+      const newAttempt = await storage.createAssessmentAttempt({ userId, assessmentId });
+
       // Log the activity
       await storage.createActivityLog({
-        userId: req.user.id,
+        userId: userId,
         action: "started_assessment",
         resourceType: "assessment",
-        resourceId: attemptData.assessmentId,
-        metadata: {},
+        resourceId: assessmentId,
+        metadata: {}, // Prisma expects JsonNull or an object
       });
-      
+
       res.status(201).json(newAttempt);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error creating assessment attempt:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -452,30 +558,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.put('/api/assessment-attempts/:id', isAuthenticated, async (req, res) => {
     try {
       const attemptId = parseInt(req.params.id);
+       if (isNaN(attemptId)) {
+        return res.status(400).json({ message: "Invalid attempt ID" });
+      }
       const attempt = await storage.getAssessmentAttempt(attemptId);
-      
+
       if (!attempt) {
         return res.status(404).json({ message: "Assessment attempt not found" });
       }
-      
+
       // Only allow the user who created the attempt to update it
-      if (attempt.userId !== req.user.id) {
+      if (attempt.userId !== req.user!.id) { // Assert req.user exists
         return res.status(403).json({ message: "Forbidden" });
       }
-      
-      const updatedAttempt = await storage.updateAssessmentAttempt(attemptId, req.body);
-      
+
+      const updateData = req.body; // Use raw body for now
+      const updatedAttempt = await storage.updateAssessmentAttempt(attemptId, updateData);
+
+       if (!updatedAttempt) {
+         return res.status(404).json({ message: "Assessment attempt not found or update failed" });
+      }
+
       // If the attempt is being marked as completed, log the activity
-      if (req.body.status === "completed" && attempt.status !== "completed") {
+      if (updateData.status === "completed" && attempt.status !== "completed") {
         await storage.createActivityLog({
-          userId: req.user.id,
+          userId: req.user!.id, // Assert req.user exists
           action: "completed_assessment",
           resourceType: "assessment",
           resourceId: attempt.assessmentId,
-          metadata: { score: req.body.score },
+          metadata: { score: updateData.score }, // Ensure metadata is a valid JSON object
         });
       }
-      
+
       res.json(updatedAttempt);
     } catch (error) {
       console.error("Error updating assessment attempt:", error);
@@ -496,17 +610,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/groups', isAuthenticated, hasRole(['admin']), async (req, res) => {
     try {
-      const groupData = insertGroupSchema.parse(req.body);
-      const newGroup = await storage.createGroup(groupData);
-      
+      // Zod validation removed
+      // const groupData = insertGroupSchema.parse(req.body);
+      const { name, description } = req.body;
+
+      if (!name) {
+           return res.status(400).json({ message: "Group name is required" });
+      }
+
+      const newGroup = await storage.createGroup({ name, description: description || null });
+
       res.status(201).json(newGroup);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error creating group:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -516,20 +632,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/groups/:groupId/members', isAuthenticated, hasRole(['admin']), async (req, res) => {
     try {
       const groupId = parseInt(req.params.groupId);
+       if (isNaN(groupId)) {
+        return res.status(400).json({ message: "Invalid group ID" });
+      }
       const groupMembers = await storage.getGroupMembersByGroup(groupId);
-      
-      // Get the user details for each member
+
+      // TODO: Consider using Prisma include to fetch user details efficiently
+      // For now, keep separate fetches
       const membersWithUserDetails = await Promise.all(
         groupMembers.map(async (member) => {
           const user = await storage.getUser(member.userId);
-          const { password, ...userWithoutPassword } = user || {};
+          // Explicitly handle null user case
+          const { password, ...userWithoutPassword } = user ?? {};
           return {
             ...member,
-            user: userWithoutPassword,
+            user: user ? userWithoutPassword : null,
           };
         })
       );
-      
+
       res.json(membersWithUserDetails);
     } catch (error) {
       console.error("Error fetching group members:", error);
@@ -539,40 +660,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/group-members', isAuthenticated, hasRole(['admin']), async (req, res) => {
     try {
-      const memberData = insertGroupMemberSchema.parse(req.body);
-      
+      // Zod validation removed
+      // const memberData = insertGroupMemberSchema.parse(req.body);
+      const { groupId, userId } = req.body;
+
+      if (typeof groupId !== 'number' || typeof userId !== 'number') {
+           return res.status(400).json({ message: "Valid groupId and userId are required" });
+      }
+
       // Check if the group exists
-      const group = await storage.getGroup(memberData.groupId);
+      const group = await storage.getGroup(groupId);
       if (!group) {
         return res.status(404).json({ message: "Group not found" });
       }
-      
+
       // Check if the user exists
-      const user = await storage.getUser(memberData.userId);
+      const user = await storage.getUser(userId);
       if (!user) {
         return res.status(404).json({ message: "User not found" });
       }
-      
+
       // Check if the user is already a member of the group
-      const groupMembers = await storage.getGroupMembersByGroup(memberData.groupId);
+      const groupMembers = await storage.getGroupMembersByGroup(groupId);
       const existingMember = groupMembers.find(
-        (member) => member.userId === memberData.userId
+        (member) => member.userId === userId
       );
-      
+
       if (existingMember) {
         return res.status(400).json({ message: "User is already a member of this group" });
       }
-      
-      const newMember = await storage.createGroupMember(memberData);
-      
+
+      const newMember = await storage.createGroupMember({ groupId, userId });
+
       res.status(201).json(newMember);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error adding group member:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -581,39 +703,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Course access
   app.post('/api/course-access', isAuthenticated, hasRole(['admin']), async (req, res) => {
     try {
-      const accessData = insertCourseAccessSchema.parse(req.body);
-      
+      // Zod validation removed
+      // const accessData = insertCourseAccessSchema.parse(req.body);
+      const { courseId, userId, groupId, accessType } = req.body;
+
+      if (typeof courseId !== 'number' || !accessType || (!userId && !groupId)) {
+           return res.status(400).json({ message: "Valid courseId, accessType, and either userId or groupId are required" });
+      }
+       if (userId && typeof userId !== 'number') {
+           return res.status(400).json({ message: "Invalid userId provided" });
+       }
+        if (groupId && typeof groupId !== 'number') {
+           return res.status(400).json({ message: "Invalid groupId provided" });
+       }
+
+
       // Check if the course exists
-      const course = await storage.getCourse(accessData.courseId);
+      const course = await storage.getCourse(courseId);
       if (!course) {
         return res.status(404).json({ message: "Course not found" });
       }
-      
+
       // Check if user or group exists
-      if (accessData.userId) {
-        const user = await storage.getUser(accessData.userId);
+      if (userId) {
+        const user = await storage.getUser(userId);
         if (!user) {
           return res.status(404).json({ message: "User not found" });
         }
       }
-      
-      if (accessData.groupId) {
-        const group = await storage.getGroup(accessData.groupId);
+
+      if (groupId) {
+        const group = await storage.getGroup(groupId);
         if (!group) {
           return res.status(404).json({ message: "Group not found" });
         }
       }
-      
-      const newAccess = await storage.createCourseAccess(accessData);
-      
+
+      const newAccess = await storage.createCourseAccess({
+          courseId,
+          userId: userId || null,
+          groupId: groupId || null,
+          accessType
+      });
+
       res.status(201).json(newAccess);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error granting course access:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -622,81 +757,88 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Lesson progress
   app.post('/api/lesson-progress', isAuthenticated, async (req, res) => {
     try {
-      const progressData = insertLessonProgressSchema.parse({
-        ...req.body,
-        userId: req.user.id,
-      });
-      
+      // Zod validation removed
+      // const progressData = insertLessonProgressSchema.parse({ ... });
+      const { lessonId, status } = req.body;
+      const userId = req.user!.id; // Assert req.user exists
+
+      if (typeof lessonId !== 'number' || !status) {
+           return res.status(400).json({ message: "Valid lessonId and status are required" });
+      }
+
       // Check if the lesson exists
-      const lesson = await storage.getLesson(progressData.lessonId);
+      const lesson = await storage.getLesson(lessonId);
       if (!lesson) {
         return res.status(404).json({ message: "Lesson not found" });
       }
-      
+
       // Check if there's existing progress
-      const userProgressItems = await storage.getLessonProgressByUser(req.user.id);
+      const userProgressItems = await storage.getLessonProgressByUser(userId);
       const existingProgress = userProgressItems.find(
-        (progress) => progress.lessonId === progressData.lessonId
+        (progress) => progress.lessonId === lessonId
       );
-      
+
       let progressResult;
-      
+      const progressInput = { userId, lessonId, status };
+
       if (existingProgress) {
         // Update existing progress
-        progressResult = await storage.updateLessonProgress(existingProgress.id, progressData);
+        progressResult = await storage.updateLessonProgress(existingProgress.id, progressInput);
+         if (!progressResult) {
+             // Handle potential update failure (e.g., record deleted between check and update)
+             return res.status(404).json({ message: "Lesson progress record not found for update" });
+         }
       } else {
         // Create new progress
-        progressResult = await storage.createLessonProgress(progressData);
+        progressResult = await storage.createLessonProgress(progressInput);
       }
-      
+
       // Log the activity if completing the lesson
-      if (progressData.status === "completed") {
+      if (status === "completed") {
         await storage.createActivityLog({
-          userId: req.user.id,
+          userId: userId,
           action: "completed_lesson",
           resourceType: "lesson",
-          resourceId: progressData.lessonId,
-          metadata: {},
+          resourceId: lessonId,
+          metadata: {}, // Prisma expects JsonNull or an object
         });
-        
+
         // Update course enrollment progress
         const module = await storage.getModule(lesson.moduleId);
         if (module) {
-          const userEnrollments = await storage.getEnrollmentsByUser(req.user.id);
+          const userEnrollments = await storage.getEnrollmentsByUser(userId);
           const enrollment = userEnrollments.find(
-            (enrollment) => enrollment.courseId === module.courseId
+            (enr) => enr.courseId === module.courseId
           );
-          
+
           if (enrollment) {
-            // Calculate new progress percentage
+            // Recalculate progress percentage
             const moduleLessons = await storage.getLessonsByModule(lesson.moduleId);
-            const userProgress = await storage.getLessonProgressByUser(req.user.id);
-            
-            const completedLessons = userProgress.filter(
-              (progress) => 
-                progress.status === "completed" && 
-                moduleLessons.some((lesson) => lesson.id === progress.lessonId)
+            // Fetch potentially updated progress list
+            const updatedUserProgress = await storage.getLessonProgressByUser(userId);
+
+            const completedLessonsInModule = updatedUserProgress.filter(
+              (prog) =>
+                prog.status === "completed" &&
+                moduleLessons.some((l) => l.id === prog.lessonId)
             ).length;
-            
-            const progressPercentage = Math.round(
-              (completedLessons / moduleLessons.length) * 100
-            );
-            
+
+            const progressPercentage = moduleLessons.length > 0
+              ? Math.round((completedLessonsInModule / moduleLessons.length) * 100)
+              : 0; // Avoid division by zero
+
             await storage.updateEnrollment(enrollment.id, {
               progress: progressPercentage,
+              // Mark course completed if progress is 100%? Add logic here if needed.
+              // completedAt: progressPercentage === 100 ? new Date() : null
             });
           }
         }
       }
-      
+
       res.status(201).json(progressResult);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: error.errors 
-        });
-      }
+      // if (error instanceof z.ZodError) { ... }
       console.error("Error updating lesson progress:", error);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -705,13 +847,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Activity logs
   app.get('/api/activity-logs', isAuthenticated, async (req, res) => {
     try {
-      const activityLogs = await storage.getActivityLogsByUser(req.user.id);
+      const activityLogs = await storage.getActivityLogsByUser(req.user!.id); // Assert req.user exists
       res.json(activityLogs);
     } catch (error) {
       console.error("Error fetching activity logs:", error);
       res.status(500).json({ message: "Internal server error" });
     }
   });
+
+  // --- Video Upload Route ---
+  app.post('/api/upload/video', isAuthenticated, hasRole(['contributor', 'admin']), uploadVideo.single('video'), (req, res) => {
+    // 'video' should match the field name in the FormData from the frontend
+    if (!req.file) {
+      return res.status(400).json({ message: 'No video file uploaded.' });
+    }
+
+    // Construct the URL path to access the video
+    // Assuming 'uploads' is served statically at the root
+    const videoUrl = `/uploads/videos/${req.file.filename}`; 
+
+    res.status(201).json({ 
+      message: 'Video uploaded successfully', 
+      videoUrl: videoUrl // Return the URL path
+    });
+  }, (error: Error, req: Request, res: Response, next: NextFunction) => {
+    // Multer error handling
+    if (error instanceof multer.MulterError) {
+      // A Multer error occurred (e.g., file size limit)
+      return res.status(400).json({ message: `Multer error: ${error.message}` });
+    } else if (error) {
+      // An unknown error occurred (e.g., file filter rejection)
+      return res.status(400).json({ message: error.message });
+    }
+    // If no error, continue
+    next();
+  });
+  // --- End Video Upload Route ---
+
 
   // Add the HTTP server
   const httpServer = createServer(app);

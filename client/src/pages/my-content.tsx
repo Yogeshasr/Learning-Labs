@@ -14,9 +14,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
+import { useLocation } from "wouter"; // Import useLocation
 
 export default function MyContent() {
   const { user } = useAuth();
+  const [, navigate] = useLocation(); // Get navigate function
   
   // Mock data for demonstration
   const courses = [
@@ -63,7 +65,7 @@ export default function MyContent() {
             </p>
           </div>
           <div className="mt-4 flex md:mt-0 md:ml-4">
-            <Button>
+            <Button onClick={() => navigate('/create-course')}>
               <Plus className="mr-2 h-4 w-4" />
               Create Course
             </Button>
@@ -139,7 +141,7 @@ export default function MyContent() {
                         <Eye className="mr-2 h-4 w-4" />
                         Preview
                       </Button>
-                      <Button size="sm">
+                      <Button size="sm" onClick={() => navigate(`/edit-course/${course.id}`)}>
                         <Edit className="mr-2 h-4 w-4" />
                         Edit
                       </Button>

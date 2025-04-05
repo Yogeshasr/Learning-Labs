@@ -6,9 +6,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, ArrowRight, Clock, BookOpen, CheckCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { useLocation } from "wouter"; // Import useLocation
 
 export default function MyCourses() {
   const { user } = useAuth();
+  const [, navigate] = useLocation(); // Get navigate function
   
   // Mock data for demonstration
   const enrolledCourses = [
@@ -147,7 +149,7 @@ export default function MyCourses() {
                     <div className="text-sm">
                       Instructor: <span className="font-medium">{course.instructor}</span>
                     </div>
-                    <Button size="sm">
+                    <Button size="sm" onClick={() => navigate(`/course-detail?id=${course.id}`)}>
                       Continue
                       <ArrowRight className="ml-2 h-4 w-4" />
                     </Button>
