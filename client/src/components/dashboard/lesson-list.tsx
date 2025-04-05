@@ -30,7 +30,10 @@ export function LessonList({ moduleId }: LessonListProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0); // Optional progress tracking
 
-  // TODO: Add states for editing lessons
+  // State for editing lessons
+  const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
+  const [editingLessonTitle, setEditingLessonTitle] = useState('');
+  // Add state for editing content/video if needed later
 
   // Fetch lessons for the module
   useEffect(() => {
@@ -166,11 +169,43 @@ export function LessonList({ moduleId }: LessonListProps) {
        // Note: Backend should handle deleting associated video file if necessary
      } catch (error) {
        console.error("Failed to delete lesson:", error);
-       // TODO: Add user-facing error handling
+      // TODO: Add user-facing error handling
      }
   };
 
-  // TODO: Implement edit lesson functionality
+  const handleEditLesson = (lesson: Lesson) => {
+    setEditingLessonId(lesson.id);
+    setEditingLessonTitle(lesson.title);
+    // TODO: Set state for editing content/video if needed
+  };
+
+  const handleSaveLessonEdit = async (lessonId: number) => {
+    if (!editingLessonTitle.trim()) return; // Maybe allow empty if needed?
+    console.log(`Saving edit for lesson ID ${lessonId}: ${editingLessonTitle}`);
+    try {
+      // Replace with actual API call: PUT /api/lessons/:lessonId (body: { title, ... })
+      await new Promise(resolve => setTimeout(resolve, 300)); // Simulate API call
+      
+      // Assuming backend returns the updated lesson
+      const updatedLessonFromServer: Lesson = { 
+          id: lessonId, 
+          title: editingLessonTitle, 
+          position: lessons.find(l => l.id === lessonId)?.position ?? 0, // Keep original position
+          // Include other fields from backend response
+      }; 
+
+      setLessons(lessons.map(l => 
+          l.id === lessonId ? updatedLessonFromServer : l
+      ).sort((a, b) => a.position - b.position)); // Maintain sort order
+      
+      setEditingLessonId(null); // Exit editing mode
+      setEditingLessonTitle('');
+    } catch (error) {
+      console.error("Failed to save lesson edit:", error);
+      // TODO: Add user-facing error handling
+    }
+  };
+
   // TODO: Implement drag-and-drop reordering
 
   return (
@@ -182,16 +217,37 @@ export function LessonList({ moduleId }: LessonListProps) {
       ) : (
         lessons.map((lesson) => (
           <div key={lesson.id} className="flex items-center justify-between p-2 rounded bg-white dark:bg-slate-900/50 shadow-sm">
-             <div className="flex items-center gap-3 flex-grow">
+             <div className="flex items-center gap-3 flex-grow min-w-0"> {/* Added min-w-0 for flex truncation */}
                 <GripVertical className="h-4 w-4 text-slate-400 cursor-grab flex-shrink-0" />
                 {lesson.videoUrl ? <Video className="h-4 w-4 text-blue-500 flex-shrink-0" /> : <FileText className="h-4 w-4 text-slate-500 flex-shrink-0" />}
-                <span className="text-sm font-medium flex-grow truncate" title={lesson.title}>{lesson.title}</span>
-                {lesson.duration && <span className="text-xs text-slate-500 flex-shrink-0">{Math.floor(lesson.duration / 60)} min</span>}
+                
+                {/* Display Input or Title based on editing state */}
+                {editingLessonId === lesson.id ? (
+                  <Input 
+                    value={editingLessonTitle}
+                    onChange={(e) => setEditingLessonTitle(e.target.value)}
+                    onBlur={() => handleSaveLessonEdit(lesson.id)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSaveLessonEdit(lesson.id)}
+                    className="h-7 text-sm flex-grow" // Adjusted height and added flex-grow
+                    autoFocus
+                  />
+                ) : (
+                  <span className="text-sm font-medium flex-grow truncate" title={lesson.title}>{lesson.title}</span>
+                )}
+
+                {lesson.duration && editingLessonId !== lesson.id && ( // Hide duration while editing title
+                   <span className="text-xs text-slate-500 flex-shrink-0 ml-2">{Math.floor(lesson.duration / 60)} min</span>
+                )}
              </div>
              <div className="flex items-center gap-1 flex-shrink-0">
-                <Button size="icon" variant="ghost" className="h-7 w-7">
-                   <Edit2 className="h-3.5 w-3.5" />
-                </Button>
+                {/* Edit/Cancel Button */}
+                {editingLessonId === lesson.id ? (
+                   <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setEditingLessonId(null)}>Cancel</Button>
+                ) : (
+                   <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => handleEditLesson(lesson)}>
+                      <Edit2 className="h-3.5 w-3.5" />
+                   </Button>
+                )}
                 <Button size="icon" variant="ghost" className="text-red-500 hover:text-red-600 h-7 w-7" onClick={() => handleDeleteLesson(lesson.id)}>
                    <Trash2 className="h-3.5 w-3.5" />
                 </Button>

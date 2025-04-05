@@ -1,5 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
 import { PrismaClient, Prisma } from "@prisma/client"; // Import Prisma namespace for types
 import type {
   User, Course, Module, Lesson, Enrollment, Assessment, Question,
@@ -205,6 +203,29 @@ export class PrismaStorage implements IStorage {
   async getCourse(id: number): Promise<Course | null> {
     return this.prisma.course.findUnique({ where: { id } });
   }
+  // New method to get course with nested content
+  async getCourseWithContent(id: number): Promise<Course | null> {
+    return this.prisma.course.findUnique({ 
+      where: { id },
+      include: {
+        instructor: true, // Include instructor details
+        modules: {
+          orderBy: { position: 'asc' }, // Order modules
+          include: {
+            lessons: {
+              orderBy: { position: 'asc' }, // Order lessons within modules
+            },
+            // Optionally include assessments here too if needed on detail page
+            // assessments: {
+            //   orderBy: { createdAt: 'asc' } 
+            // }
+          }
+        },
+        // Include enrollments if needed for count, etc.
+        // enrollments: true 
+      }
+    });
+  }
   async getCourses(): Promise<Course[]> {
     return this.prisma.course.findMany();
   }
@@ -212,6 +233,7 @@ export class PrismaStorage implements IStorage {
     return this.prisma.course.findMany({ where: { instructorId } });
   }
   async createCourse(course: InsertCourse): Promise<Course> {
+    // Ensure category is included in the data passed to Prisma
     return this.prisma.course.create({ data: course });
   }
   async updateCourse(id: number, courseData: Partial<Course>): Promise<Course | null> {
@@ -291,7 +313,27 @@ export class PrismaStorage implements IStorage {
     return this.prisma.enrollment.findUnique({ where: { id } });
   }
   async getEnrollmentsByUser(userId: number): Promise<Enrollment[]> {
-    return this.prisma.enrollment.findMany({ where: { userId } });
+    // Include nested course data with instructor and module count
+    return this.prisma.enrollment.findMany({ 
+      where: { userId },
+      include: {
+        course: {
+          include: {
+            instructor: { // Include instructor relation
+              select: { // Select only necessary fields
+                firstName: true,
+                lastName: true,
+              }
+            }, 
+            modules: { // Include modules relation
+              select: { // Select only id for counting
+                id: true 
+              }
+            } 
+          }
+        }
+      }
+    });
   }
   async getEnrollmentsByCourse(courseId: number): Promise<Enrollment[]> {
     return this.prisma.enrollment.findMany({ where: { courseId } });
@@ -505,6 +547,19 @@ export class PrismaStorage implements IStorage {
   }
   async getLessonProgressByLesson(lessonId: number): Promise<LessonProgress[]> {
     return this.prisma.lessonProgress.findMany({ where: { lessonId } });
+  }
+  // New method to get progress for a user in a specific course
+  async getLessonProgressByUserAndCourse(userId: number, courseId: number): Promise<LessonProgress[]> {
+    return this.prisma.lessonProgress.findMany({
+      where: {
+        userId: userId,
+        lesson: {
+          module: {
+            courseId: courseId,
+          },
+        },
+      },
+    });
   }
   async createLessonProgress(progress: InsertLessonProgress): Promise<LessonProgress> {
     // Defaults handled by schema

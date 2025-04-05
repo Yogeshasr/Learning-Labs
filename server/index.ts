@@ -5,6 +5,11 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import path from "path"; // Import path
+import { fileURLToPath } from 'url'; // Import fileURLToPath
+
+// Get current directory in ES module scope
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
@@ -42,9 +47,10 @@ app.use((req, res, next) => {
 });
 
 // --- Serve Uploaded Files ---
-// Serve files from the 'uploads' directory (relative to dist/server)
-// const uploadsDir = path.join(__dirname, '..', 'uploads');
-// app.use('/uploads', express.static(uploadsDir));
+// Serve files from the 'uploads' directory (relative to project root)
+// Adjust '..' if server/index.ts is nested deeper (e.g., src/server/index.ts needs '../..')
+const uploadsDir = path.join(__dirname, '..', 'uploads'); 
+app.use('/uploads', express.static(uploadsDir));
 // --- End Serve Uploaded Files ---
 
 

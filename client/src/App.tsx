@@ -48,7 +48,7 @@ function Router() {
       <ProtectedRoute path="/course-approval" component={CourseApproval} />
       <ProtectedRoute path="/access-control" component={AccessControl} />
       <ProtectedRoute path="/system-settings" component={SystemSettings} />
-      <ProtectedRoute path="/course-detail" component={CourseDetail} />
+      <ProtectedRoute path="/course-detail/:id" component={CourseDetail} /> {/* Use path param */}
       <ProtectedRoute path="/course-content" component={CourseContent} />
       <ProtectedRoute path="/create-course" component={CreateCoursePage} />
       <ProtectedRoute path="/edit-course/:id" component={EditCoursePage} /> {/* Add Edit Course Route */}

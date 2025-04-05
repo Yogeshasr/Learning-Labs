@@ -83,6 +83,7 @@ model Course {
   id           Int               @id @default(autoincrement())
   title        String
   description  String
+  category     String? // Added category field
   thumbnail    String?
   duration     Int? // in minutes
   difficulty   CourseDifficulty?

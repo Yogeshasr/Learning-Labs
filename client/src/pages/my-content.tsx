@@ -15,6 +15,25 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { useLocation } from "wouter"; // Import useLocation
+import { useQuery } from "@tanstack/react-query"; // Import useQuery
+import { Loader2 } from "lucide-react"; // Import Loader2 for loading state
+import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
+
+// Define a type for the course data expected from the API
+// Adjust based on the actual fields returned by /api/courses
+type CourseType = {
+  id: number;
+  title: string;
+  description?: string | null;
+  status?: string | null; // e.g., 'published', 'draft', 'under review'
+  instructorId?: number | null; // Crucial for filtering
+  // Add other fields displayed in the card if available from API
+  // studentsEnrolled?: number; 
+  // lastUpdated?: string; 
+  // completionRate?: number; 
+  modules?: { id: number }[]; // Example: if module count is needed
+  createdAt: string; // Assuming this is available for sorting/display
+};
 
 export default function MyContent() {
   const { user } = useAuth();
