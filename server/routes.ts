@@ -1,12 +1,18 @@
 import { type Express, Request, Response, NextFunction } from "express"; // Keep original import
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { setupAuth } from "./auth";
+import { comparePasswords, hashPassword, setupAuth } from "./auth";
 import { Prisma } from "@prisma/client"; // Import Prisma namespace
 import multer from "multer"; // Import multer
 import path from "path"; // Import path for handling file paths
 import fs from "fs"; // Import fs for creating directories
 import { fileURLToPath } from "url"; // Import fileURLToPath
+import {
+  sendApproveEmail,
+  sendGroupAssignmentEmail,
+  sendRejectionEmail,
+} from "./utils/email";
+
 // Zod validation removed for now, can be added back based on Prisma types
 // import { z } from "zod";
 // Drizzle schema imports removed
@@ -26,6 +32,7 @@ import type {
   LessonProgress,
   ActivityLog,
 } from ".prisma/client"; // Import Prisma types
+import axios from "axios";
 
 // --- Multer Configuration for Video Uploads ---
 const projectRoot = path.join(
@@ -34,12 +41,16 @@ const projectRoot = path.join(
 );
 const videoUploadDir = path.join(projectRoot, "uploads", "videos");
 const imageUploadDir = path.join(projectRoot, "uploads", "course-images");
+const resourceUploadDir = path.join(projectRoot, "uploads", "resources");
 
 if (!fs.existsSync(videoUploadDir)) {
   fs.mkdirSync(videoUploadDir, { recursive: true });
 }
 if (!fs.existsSync(imageUploadDir)) {
   fs.mkdirSync(imageUploadDir, { recursive: true });
+}
+if (!fs.existsSync(resourceUploadDir)) {
+  fs.mkdirSync(resourceUploadDir, { recursive: true });
 }
 
 const videoStorage = multer.diskStorage({
@@ -77,7 +88,41 @@ const uploadImage = multer({
   storage: imageStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
 });
+
+const resourceStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, resourceUploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(
+      null,
+      file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname)
+    );
+  },
+});
+
+const uploadResource = multer({
+  storage: resourceStorage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit for resources (PDFs, docs, etc.)
+});
 // --- End Multer Configuration ---
+
+async function updateCourseDuration(courseId: number) {
+  const modules = await storage.getModulesByCourse(courseId);
+  let totalDuration = 0;
+  for (const module of modules) {
+    const lessons = await storage.getLessonsByModule(module.id);
+    for (const lesson of lessons) {
+      // Only add duration if it's not null
+      if (lesson.duration != null) {
+        totalDuration += lesson.duration;
+      }
+    }
+  }
+  const totalMinutes = Math.ceil(totalDuration / 60);
+  await storage.updateCourse(courseId, { duration: totalMinutes });
+}
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Set up authentication
@@ -104,9 +149,130 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(403).json({ message: "Forbidden" });
     };
 
+  // Profile routes
+  app.get("/api/profile", isAuthenticated, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      const { password, ...userWithoutPassword } = user;
+      res.json(userWithoutPassword);
+    } catch (error) {
+      console.error("Error fetching profile:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Profile routes
+  const upload = multer({ dest: "uploads/" }); // You can customize destination
+
+  app.put(
+    "/api/profile",
+    isAuthenticated,
+    upload.single("profilePicture"),
+    async (req, res) => {
+      try {
+        const userId = parseInt(req.body.id);
+        if (userId !== req.user!.id) {
+          return res.status(403).json({ message: "Unauthorized" });
+        }
+
+        const { firstName, lastName } = req.body;
+
+        let profilePictureUrl = undefined;
+        if (req.file) {
+          // You can store req.file.path or handle cloud storage upload here
+          profilePictureUrl = `/uploads/${req.file.filename}`;
+        }
+
+        const updatedUser = await storage.updateUser(userId, {
+          firstName,
+          lastName,
+          ...(profilePictureUrl && { profilePicture: profilePictureUrl }),
+        });
+
+        if (!updatedUser) {
+          return res.status(404).json({ message: "User not found" });
+        }
+
+        const { password, ...userWithoutPassword } = updatedUser;
+        res.json(userWithoutPassword);
+      } catch (error) {
+        console.error("Error updating profile:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  app.put("/api/profile/password", isAuthenticated, async (req, res) => {
+    try {
+      const userId = parseInt(req.body.id);
+      if (userId !== req.user!.id) {
+        return res.status(403).json({ message: "Unauthorized" });
+      }
+
+      const { currentPassword, newPassword } = req.body;
+
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      // Verify current password
+      const isValid = await comparePasswords(currentPassword, user.password);
+      if (!isValid) {
+        return res
+          .status(400)
+          .json({ message: "Current password is incorrect" });
+      }
+
+      // Hash new password
+      const hashedPassword = await hashPassword(newPassword);
+
+      // Update password
+      await storage.updateUser(userId, { password: hashedPassword });
+
+      res.json({ message: "Password updated successfully" });
+    } catch (error) {
+      console.error("Error updating password:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // app.put("/api/profile/password", isAuthenticated, async (req, res) => {
+  //   try {
+  //     const userId = req.user!.id;
+  //     const { currentPassword, newPassword } = req.body;
+
+  //     const user = await storage.getUser(userId);
+  //     if (!user) {
+  //       return res.status(404).json({ message: "User not found" });
+  //     }
+
+  //     // Verify current password
+  //     const isValid = await bcrypt.compare(currentPassword, user.password);
+  //     if (!isValid) {
+  //       return res.status(400).json({ message: "Current password is incorrect" });
+  //     }
+
+  //     // Hash new password
+  //     const hashedPassword = await hashPassword(newPassword);
+
+  //     // Update password
+  //     await storage.updateUser(userId, { password: hashedPassword });
+
+  //     res.json({ message: "Password updated successfully" });
+  //   } catch (error) {
+  //     console.error("Error updating password:", error);
+  //     res.status(500).json({ message: "Internal server error" });
+  //   }
+  // });
+
   // User routes
   app.get(
-    "/api/users",
+    "/api/all/users",
     isAuthenticated,
     hasRole(["admin"]),
     async (req, res) => {
@@ -114,6 +280,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { search, role } = req.query;
         const users = await storage.getUsers();
         let filteredUsers = users.map(({ password, ...user }) => user);
+
+        // Filter for active users
+        filteredUsers = filteredUsers.filter(
+          (user) => user.status === "active" || user.status === "inactive"
+        );
 
         if (search) {
           const searchStr = search.toString().toLowerCase();
@@ -133,6 +304,171 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.json(filteredUsers);
       } catch (error) {
         console.error("Error fetching users:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  app.get(
+    "/api/users",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const { search, role } = req.query;
+        const users = await storage.getUsers();
+        let filteredUsers = users.map(({ password, ...user }) => user);
+
+        // Filter for active users
+        filteredUsers = filteredUsers.filter(
+          (user) => user.status === "active"
+        );
+
+        if (search) {
+          const searchStr = search.toString().toLowerCase();
+          filteredUsers = filteredUsers.filter(
+            (user) =>
+              user.username.toLowerCase().includes(searchStr) ||
+              user.email.toLowerCase().includes(searchStr) ||
+              user.firstName?.toLowerCase().includes(searchStr) ||
+              user.lastName?.toLowerCase().includes(searchStr)
+          );
+        }
+
+        if (role && role !== "all") {
+          filteredUsers = filteredUsers.filter((user) => user.role === role);
+        }
+
+        res.json(filteredUsers);
+      } catch (error) {
+        console.error("Error fetching users:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // Get draft users
+
+  app.get(
+    "/api/draft-users",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const { search, role } = req.query;
+        const users = await storage.getUsers();
+        let filteredUsers = users.map(({ password, ...user }) => user);
+
+        // Filter for active users
+        filteredUsers = filteredUsers.filter((user) => user.status === "draft");
+
+        if (search) {
+          const searchStr = search.toString().toLowerCase();
+          filteredUsers = filteredUsers.filter(
+            (user) =>
+              user.username.toLowerCase().includes(searchStr) ||
+              user.email.toLowerCase().includes(searchStr) ||
+              user.firstName?.toLowerCase().includes(searchStr) ||
+              user.lastName?.toLowerCase().includes(searchStr)
+          );
+        }
+
+        if (role && role !== "all") {
+          filteredUsers = filteredUsers.filter((user) => user.role === role);
+        }
+
+        res.json(filteredUsers);
+      } catch (error) {
+        console.error("Error fetching users:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // Approve user
+  app.post(
+    "/api/users/:id/approve",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const userId = parseInt(req.params.id);
+        const { password } = req.body; // Ensure password is being passed
+
+        // Check if the user exists
+        const existingUser = await storage.getUser(userId);
+        if (!existingUser) {
+          console.error("User not found in the database");
+          return res.status(404).json({ message: "User not found" });
+        }
+
+        // Await hashed password before updating
+        const hashedPassword = await hashPassword(password);
+
+        // Proceed with updating the user if they exist
+        const updatedUser = await storage.updateUser(userId, {
+          status: "active",
+          password: hashedPassword, // Use the resolved hashed password
+        });
+
+        if (!updatedUser) {
+          console.error("Failed to update user:", userId);
+          return res.status(500).json({ message: "Failed to update user" });
+        }
+
+        const { password: pw, ...userWithoutPassword } = updatedUser; // Omit password
+        res.json(userWithoutPassword);
+        // Send welcome email with credentials
+        try {
+          await sendApproveEmail(
+            updatedUser.email,
+            updatedUser.username,
+            password, // Send the original unhashed password
+            updatedUser.role
+          );
+          // Create notifications
+          if (updatedUser.id) {
+            await storage.createNotification(
+              updatedUser.id,
+              "Welcome to the Application",
+              `You have been granted access to the Application`
+            );
+          }
+        } catch (emailError) {
+          console.error("Failed to send welcome email:", emailError);
+          // Continue with the response even if email fails
+        }
+      } catch (error) {
+        console.error("Error approving user:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  app.post(
+    "/api/users/:id/reject",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const userId = parseInt(req.params.id);
+        const user = await storage.getUser(userId);
+
+        if (!user) {
+          return res.status(404).json({ message: "User not found" });
+        }
+        res.status(200).json({ message: "User rejected successfully" });
+
+        await storage.deleteUser(userId);
+        // Send rejection email before deleting the user
+        try {
+          await sendRejectionEmail(user.email, user.username);
+        } catch (emailError) {
+          console.error("Failed to send rejection email:", emailError);
+          // Continue with deletion even if email fails
+        }
+      } catch (error) {
+        console.error("Error rejecting user:", error);
         res.status(500).json({ message: "Internal server error" });
       }
     }
@@ -184,17 +520,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
-  app.delete(
-    "/api/users/:id",
+  // app.delete(
+  //   "/api/users/:id",
+  //   isAuthenticated,
+  //   hasRole(["admin"]),
+  //   async (req, res) => {
+  //     try {
+  //       const userId = parseInt(req.params.id);
+  //       await storage.deleteUser(userId);
+  //       res.status(204).send();
+  //     } catch (error) {
+  //       console.error("Error deleting user:", error);
+  //       res.status(500).json({ message: "Internal server error" });
+  //     }
+  //   }
+  // );
+
+  app.put(
+    "/api/users/:id/status",
     isAuthenticated,
     hasRole(["admin"]),
     async (req, res) => {
       try {
         const userId = parseInt(req.params.id);
-        await storage.deleteUser(userId);
-        res.status(204).send();
+        const { status } = req.body;
+
+        if (!["active", "inactive"].includes(status)) {
+          return res.status(400).json({ message: "Invalid status value" });
+        }
+
+        const updatedUser = await storage.updateUser(userId, { status });
+        res.json({ message: `User marked as ${status}`, user: updatedUser });
       } catch (error) {
-        console.error("Error deleting user:", error);
+        console.error("Error updating user status:", error);
         res.status(500).json({ message: "Internal server error" });
       }
     }
@@ -273,7 +631,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         const updatedCourse = await storage.updateCourse(courseId, {
-          status: "draft",
+          status: "rejected",
         });
         if (!updatedCourse) {
           return res.status(404).json({ message: "Course not found" });
@@ -286,9 +644,133 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
   );
+  // Get published courses route
+  app.get(
+    "/api/published-courses",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const publishedCourses = (await storage.getCourses()).filter(
+          (course) => course.status === "published"
+        );
+        const coursesWithInstructors = await Promise.all(
+          publishedCourses.map(async (course) => {
+            const instructor = course.instructorId
+              ? await storage.getUser(course.instructorId)
+              : null;
+            return {
+              ...course,
+              creator: instructor
+                ? `${instructor.firstName} ${instructor.lastName}`
+                : "Unknown",
+              submittedDate: course.createdAt.toISOString().split("T")[0],
+            };
+          })
+        );
+        res.json(coursesWithInstructors);
+      } catch (error) {
+        console.error("Error fetching published courses:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+  // Get rejected courses route
+  app.get(
+    "/api/rejected-courses",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const rejectedCourses = (await storage.getCourses()).filter(
+          (course) => course.status === "rejected"
+        );
+        const coursesWithInstructors = await Promise.all(
+          rejectedCourses.map(async (course) => {
+            const instructor = course.instructorId
+              ? await storage.getUser(course.instructorId)
+              : null;
+            return {
+              ...course,
+              creator: instructor
+                ? `${instructor.firstName} ${instructor.lastName}`
+                : "Unknown",
+              submittedDate: course.createdAt.toISOString().split("T")[0],
+            };
+          })
+        );
+        res.json(coursesWithInstructors);
+      } catch (error) {
+        console.error("Error fetching rejected courses:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
 
   // Course routes
   // --- Comments API ---
+
+  // Reorder modules within a course
+  app.post(
+    "/api/courses/:courseId/reorder-modules",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const courseId = parseInt(req.params.courseId);
+        const { moduleOrder } = req.body;
+        if (!Array.isArray(moduleOrder)) {
+          return res
+            .status(400)
+            .json({ message: "moduleOrder array is required" });
+        }
+
+        for (let i = 0; i < moduleOrder.length; i++) {
+          const moduleId = moduleOrder[i];
+          await storage.prisma.module.update({
+            where: { id: moduleId, courseId },
+            data: { position: i + 1 },
+          });
+        }
+
+        res.json({ message: "Modules reordered successfully" });
+      } catch (error) {
+        console.error("Error reordering modules:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // Reorder lessons within a module
+  app.post(
+    "/api/modules/:moduleId/reorder-lessons",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const moduleId = parseInt(req.params.moduleId);
+        const { lessonOrder } = req.body;
+        if (!Array.isArray(lessonOrder)) {
+          return res
+            .status(400)
+            .json({ message: "lessonOrder array is required" });
+        }
+
+        for (let i = 0; i < lessonOrder.length; i++) {
+          const lessonId = lessonOrder[i];
+          await storage.prisma.lesson.update({
+            where: { id: lessonId, moduleId },
+            data: { position: i + 1 },
+          });
+        }
+
+        res.json({ message: "Lessons reordered successfully" });
+      } catch (error) {
+        console.error("Error reordering lessons:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
   app.get("/api/comments", isAuthenticated, async (req, res) => {
     try {
       const lessonId = parseInt(req.query.lessonId as string);
@@ -297,7 +779,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       const allComments = await storage.prisma.comment.findMany({
         where: { lessonId },
-        orderBy: { createdAt: 'asc' },
+        orderBy: { createdAt: "asc" },
         include: {
           user: {
             select: {
@@ -349,7 +831,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { lessonId, comment, parentId } = req.body;
       if (!lessonId || !comment) {
         console.warn("Missing lessonId or comment");
-        return res.status(400).json({ message: "lessonId and comment are required" });
+        return res
+          .status(400)
+          .json({ message: "lessonId and comment are required" });
       }
 
       const newComment = await storage.createComment({
@@ -369,13 +853,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // --- End Comments API ---
 
   app.get("/api/courses", isAuthenticated, async (req, res) => {
-
     try {
-      const courses = (await storage.getCourses()).filter(
+      const userId = req.user!.id;
+      const userRole = req.user!.role;
+
+      if (userRole === "admin") {
+        const courses = (await storage.getCourses()).filter(
+          (course) => course.status === "published"
+        );
+        return res.json(courses);
+      }
+
+      const accessData = await storage.getAllCourseAccessByUser({
+        id: userId,
+        role: userRole,
+      });
+
+      // Get all published courses
+      const allPublishedCourses = (await storage.getCourses()).filter(
         (course) => course.status === "published"
       );
 
-      res.json(courses);
+      // Direct course access
+      const directAccessCourseIds = accessData
+        .filter((access) => access.userId === userId)
+        .map((access) => access.courseId);
+
+      // Get user's groups
+      const userGroups = await storage.getGroupMembersByUser(userId);
+      const userGroupIds = userGroups.map((gm) => gm.groupId);
+
+      // Courses accessed via group, only if:
+      // - user is in that group
+      // - group is assigned to that course
+      const groupAccessCourseIds: number[] = [];
+
+      for (const access of accessData) {
+        if (access.groupId && userGroupIds.includes(access.groupId)) {
+          const groupCourses = await storage.getGroupCoursesByGroup(
+            access.groupId
+          );
+          const matched = groupCourses.find(
+            (gc) => gc.courseId === access.courseId
+          );
+          if (matched) {
+            groupAccessCourseIds.push(access.courseId);
+          }
+        }
+      }
+
+      const accessibleCourseIds = new Set([
+        ...directAccessCourseIds,
+        ...groupAccessCourseIds,
+      ]);
+
+      const accessibleCourses = allPublishedCourses.filter((course) =>
+        accessibleCourseIds.has(course.id)
+      );
+
+      res.json(accessibleCourses);
     } catch (error) {
       console.error("Error fetching courses:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -445,7 +981,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const {
           title,
           description,
-          category,
+          categoryId,
           thumbnail,
           duration,
           difficulty,
@@ -466,7 +1002,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           duration: duration ? parseInt(duration) : null, // Ensure duration is number or null
           difficulty: difficulty || null,
           status: status || "draft",
-          category: category || null, // Include category
+          // category: category || null,
+          categoryId: categoryId ? parseInt(categoryId) : null,
           instructorId: req.user!.id, // Assert req.user exists
         });
 
@@ -510,7 +1047,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const {
           title,
           description,
-          category,
+          categoryId,
           thumbnail,
           duration,
           difficulty,
@@ -519,7 +1056,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const courseData: Partial<Course> = {
           title,
           description,
-          category: category || null,
+          categoryId: categoryId ? parseInt(categoryId) : null,
           thumbnail: thumbnail || null,
           duration: duration ? parseInt(duration) : null,
           difficulty: difficulty || null,
@@ -542,6 +1079,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         res.json(updatedCourse);
+        try {
+          await axios.post("http://localhost:5001/insert_questions", {
+            course_id: courseId,
+          });
+        } catch (error) {
+          console.log(error);
+        }
       } catch (error) {
         // if (error instanceof z.ZodError) { ... }
         console.error("Error updating course:", error);
@@ -582,7 +1126,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // This might happen in race conditions, treat as not found
           return res
             .status(404)
-            .json({ message: "Course not found or delete failed" });
+            .json({ message: "Cannot delete course: it has related records" });
         }
 
         res.status(204).send();
@@ -737,7 +1281,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (isNaN(moduleId)) {
           return res.status(400).json({ message: "Invalid module ID" });
         }
-        const lessons = await storage.getLessonsByModule(moduleId);
+        // For course-content page, include all lessons (assessment last)
+        const lessons = await storage.getAllLessonsByModule(moduleId);
 
         res.json(lessons);
       } catch (error) {
@@ -818,19 +1363,423 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
 
+        let estimatedDuration = finalDuration;
+
+        if ((!videoUrl || videoUrl === "") && content) {
+          const wordCount = content.trim().split(/\s+/).length;
+          estimatedDuration = Math.ceil(wordCount / 200); // 200 words per minute
+          estimatedDuration = Math.max(1, estimatedDuration); // Minimum 1 minute
+        }
+
         const newLesson = await storage.createLesson({
           moduleId,
           title,
           content: content || null,
           videoUrl: videoUrl || null,
-          duration: duration || null,
-          position
+          duration: estimatedDuration,
+          position,
         });
+
+        // Update course duration after creating lesson
+        if (module?.courseId) {
+          await updateCourseDuration(module.courseId);
+        }
 
         res.status(201).json(newLesson);
       } catch (error) {
         // if (error instanceof z.ZodError) { ... }
         console.error("Error creating lesson:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // Lesson update route (PUT /api/lessons/:id)
+  app.put(
+    "/api/lessons/:id",
+    isAuthenticated,
+    hasRole(["contributor", "admin"]),
+    async (req, res) => {
+      try {
+        const lessonId = parseInt(req.params.id);
+        if (isNaN(lessonId)) {
+          return res.status(400).json({ message: "Invalid lesson ID" });
+        }
+        const lesson = await storage.getLesson(lessonId);
+        if (!lesson) {
+          return res.status(404).json({ message: "Lesson not found" });
+        }
+        // Only allow instructor or admin to update
+        const module = await storage.getModule(lesson.moduleId);
+        if (!module) {
+          return res.status(404).json({ message: "Module not found" });
+        }
+        const course = await storage.getCourse(module.courseId);
+        if (!course) {
+          return res.status(404).json({ message: "Course not found" });
+        }
+        if (
+          course.instructorId !== req.user!.id &&
+          req.user!.role !== "admin"
+        ) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+        // Update lesson
+        const updateData = req.body;
+        const updatedLesson = await storage.updateLesson(lessonId, updateData);
+        if (!updatedLesson) {
+          return res
+            .status(404)
+            .json({ message: "Lesson not found or update failed" });
+        }
+        // Update course duration after lesson edit
+        if (module?.courseId) {
+          await updateCourseDuration(module.courseId);
+        }
+        res.json(updatedLesson);
+      } catch (error) {
+        console.error("Error updating lesson:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // Start a new assessment attempt for a module
+  app.post(
+    "/api/modules/:moduleId/assessment-attempts/start",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const moduleId = parseInt(req.params.moduleId);
+        if (isNaN(moduleId)) {
+          return res.status(400).json({ message: "Invalid module ID" });
+        }
+        // Fetch all questions for the module
+        const allQuestions = await storage.prisma.question.findMany({
+          where: { moduleId },
+        });
+        if (allQuestions.length < 1) {
+          return res
+            .status(400)
+            .json({ message: "Not enough questions for assessment" });
+        }
+        // Group questions by difficulty
+        const byDifficulty: Record<string, any[]> = {
+          beginner: [],
+          intermediate: [],
+          advanced: [],
+        };
+        for (const q of allQuestions) {
+          byDifficulty[q.difficulty].push(q);
+        }
+        // Calculate how many questions per difficulty (as equal as possible)
+        const perLevel = Math.floor(10 / 3);
+        let counts = {
+          beginner: perLevel,
+          intermediate: perLevel,
+          advanced: 10 - 2 * perLevel,
+        };
+        // If any level has fewer than needed, redistribute
+        for (const level of ["beginner", "intermediate", "advanced"]) {
+          if (byDifficulty[level].length < counts[level]) {
+            const deficit = counts[level] - byDifficulty[level].length;
+            counts[level] = byDifficulty[level].length;
+            // Redistribute deficit to other levels
+            const others = ["beginner", "intermediate", "advanced"].filter(
+              (l) => l !== level
+            );
+            for (const other of others) {
+              const available = byDifficulty[other].length - counts[other];
+              const take = Math.min(deficit, available);
+              counts[other] += take;
+              if (deficit - take <= 0) break;
+            }
+          }
+        }
+        // Randomly select questions for each difficulty
+        function pickRandom(arr: any[], n: number) {
+          const copy = [...arr];
+          const result = [];
+          for (let i = 0; i < n && copy.length > 0; i++) {
+            const idx = Math.floor(Math.random() * copy.length);
+            result.push(copy.splice(idx, 1)[0]);
+          }
+          return result;
+        }
+        let selected: any[] = [];
+        for (const level of ["beginner", "intermediate", "advanced"]) {
+          selected = selected.concat(
+            pickRandom(byDifficulty[level], counts[level])
+          );
+        }
+        // Shuffle selected questions
+        selected = pickRandom(selected, selected.length);
+
+        // Create AssessmentAttempt
+        const attempt = await storage.prisma.assessmentAttempt.create({
+          data: {
+            userId: req.user!.id,
+            moduleId,
+            status: "in_progress",
+            passed: false,
+            answers: [],
+            questionIds: selected.map((q) => q.id),
+          },
+        });
+        res.status(201).json({
+          attemptId: attempt.id,
+          questions: selected.map((q) => ({
+            id: q.id,
+            questionText: q.questionText,
+            options: q.options,
+            difficulty: q.difficulty,
+          })),
+        });
+      } catch (error) {
+        console.error("Error starting assessment attempt:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // Get the user's latest assessment attempt for a module
+  app.get(
+    "/api/modules/:moduleId/assessment-attempts/me",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const moduleId = parseInt(req.params.moduleId);
+        if (isNaN(moduleId)) {
+          return res.status(400).json({ message: "Invalid module ID" });
+        }
+        const userId = req.user!.id;
+        // Get the latest attempt for this user and module, ordered by completedAt desc
+        const latestAttempt = await storage.prisma.assessmentAttempt.findFirst({
+          where: {
+            userId,
+            moduleId,
+            completedAt: { not: null },
+          },
+          orderBy: { completedAt: "desc" },
+        });
+        if (!latestAttempt) {
+          return res.json(null);
+        }
+        res.json({
+          id: latestAttempt.id,
+          score: latestAttempt.score,
+          passed: latestAttempt.passed,
+          status: latestAttempt.status,
+          completedAt: latestAttempt.completedAt,
+        });
+      } catch (error) {
+        console.error("Error fetching latest assessment attempt:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // Submit an assessment attempt for a module
+  app.post(
+    "/api/assessment-attempts/:id/submit",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const attemptId = parseInt(req.params.id);
+
+        if (isNaN(attemptId)) {
+          return res.status(400).json({ message: "Invalid attempt ID" });
+        }
+
+        const attempt = await storage.prisma.assessmentAttempt.findUnique({
+          where: { id: attemptId },
+        });
+
+        if (!attempt) {
+          return res
+            .status(404)
+            .json({ message: "Assessment attempt not found" });
+        }
+
+        if (attempt.userId !== req.user!.id) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+
+        if (
+          attempt.status === "completed" ||
+          attempt.status === "passed" ||
+          attempt.status === "failed"
+        ) {
+          return res.status(400).json({ message: "Attempt already completed" });
+        }
+
+        const { answers } = req.body; // Array of {questionId, selectedOption}
+
+        if (!Array.isArray(answers) || answers.length < 1) {
+          return res.status(400).json({ message: "Must submit 1 answer" });
+        }
+
+        // Fetch the questions for this attempt
+        const questionIds = attempt.questionIds as number[] | undefined;
+
+        if (!questionIds || questionIds.length === 0) {
+          return res
+            .status(400)
+            .json({ message: "Invalid question set for attempt" });
+        }
+
+        const questions = await storage.prisma.question.findMany({
+          where: { id: { in: questionIds } },
+        });
+
+        // Score the answers
+        let correct = 0;
+        const answerResults = answers.map((ans: any) => {
+          const q = questions.find((q) => q.id === ans.questionId);
+
+          // const isCorrect =
+          //   q &&
+          //   ans.selectedOption.trim().toLowerCase() ===
+          //     q.correctAnswer.trim().toLowerCase();
+
+          const isCorrect =
+            q &&
+            ans.selectedOption.trim().toLowerCase() ===
+              q.options[`option${q.correctAnswer.replace("option", "")}`]
+                .trim()
+                .toLowerCase();
+
+          if (isCorrect) correct++;
+          return {
+            questionId: ans.questionId,
+            selectedOption: ans.selectedOption,
+            isCorrect,
+          };
+        });
+        const totalQuestions = questions.length;
+        const score = Math.round((correct / totalQuestions) * 100);
+        const passed = score >= 80;
+
+        // Update attempt
+        await storage.prisma.assessmentAttempt.update({
+          where: { id: attemptId },
+          data: {
+            completedAt: new Date(),
+            score,
+            status: passed ? "passed" : "failed",
+            passed,
+            answers: answerResults,
+          },
+        });
+
+        // If passed, check if all module assessments for the course are passed and update course progress
+        if (passed) {
+          // Mark the assessment lesson as completed in lesson_progress
+          const assessmentLesson = await storage.prisma.lesson.findFirst({
+            where: {
+              moduleId: attempt.moduleId,
+              type: "assessment",
+            },
+          });
+
+          if (assessmentLesson) {
+            // Check if a lesson progress record exists
+            const existingProgress =
+              await storage.prisma.lessonProgress.findFirst({
+                where: {
+                  userId: req.user!.id,
+                  lessonId: assessmentLesson.id,
+                },
+              });
+
+            if (existingProgress) {
+              await storage.prisma.lessonProgress.update({
+                where: { id: existingProgress.id },
+                data: { status: "completed", completedAt: new Date() },
+              });
+            } else {
+              await storage.prisma.lessonProgress.create({
+                data: {
+                  userId: req.user!.id,
+                  lessonId: assessmentLesson.id,
+                  status: "completed",
+                  completedAt: new Date(),
+                },
+              });
+            }
+          }
+
+          // Get the module and course
+          const module = await storage.prisma.module.findUnique({
+            where: { id: attempt.moduleId },
+          });
+
+          if (module) {
+            const courseId = module.courseId;
+            // Get all modules for the course
+            const allModules = await storage.prisma.module.findMany({
+              where: { courseId },
+            });
+            const allModuleIds = allModules.map((m) => m.id);
+
+            // For each module, check if the user has a passed attempt
+            let allPassed = true;
+            for (const modId of allModuleIds) {
+              const passedAttempt =
+                await storage.prisma.assessmentAttempt.findFirst({
+                  where: {
+                    userId: req.user!.id,
+                    moduleId: modId,
+                    passed: true,
+                  },
+                });
+              if (!passedAttempt) {
+                allPassed = false;
+                break;
+              }
+            }
+
+            // If all passed, update enrollment progress to 100%
+            if (allPassed) {
+              const enrollment = await storage.prisma.enrollment.findFirst({
+                where: { userId: req.user!.id, courseId },
+              });
+              console.log(" found:", enrollment); // <-- Log enrollment record
+
+              if (enrollment) {
+                await storage.prisma.enrollment.update({
+                  where: { id: enrollment.id },
+                  data: { progress: 100, completedAt: new Date() },
+                });
+              }
+            }
+          }
+        }
+
+        res.json({ score, passed, correct, total: totalQuestions });
+      } catch (error) {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // Get all questions for a module
+  app.get(
+    "/api/modules/:moduleId/questions",
+    isAuthenticated,
+    async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      try {
+        const moduleId = parseInt(req.params.moduleId);
+        if (isNaN(moduleId)) {
+          return res.status(400).json({ message: "Invalid module ID" });
+        }
+        const questions = await storage.prisma.question.findMany({
+          where: { moduleId },
+        });
+        res.json(questions);
+      } catch (error) {
+        console.error("Error fetching questions for module:", error);
         res.status(500).json({ message: "Internal server error" });
       }
     }
@@ -1117,185 +2066,367 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Group routes
-  app.get('/api/groups', isAuthenticated, hasRole(['admin']), async (req, res) => {
-    try {
-      const groups = await storage.getGroups();
+  app.get(
+    "/api/groups",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const groups = await storage.getGroups();
 
-      const detailedGroups = await Promise.all(
-        groups.map(async (group) => {
-          const groupMembers = await storage.getGroupMembersByGroup(group.id);
-          const groupCourses = await storage.getGroupCoursesByGroup(group.id);
+        const detailedGroups = await Promise.all(
+          groups.map(async (group) => {
+            const groupMembers = await storage.getGroupMembersByGroup(group.id);
+            const groupCourses = await storage.getGroupCoursesByGroup(group.id);
 
-          const users = (
+            const users = (
+              await Promise.all(
+                groupMembers.map(async (member) => {
+                  const user = await storage.getUser(member.userId);
+                  return user ? { id: user.id, username: user.username } : null;
+                })
+              )
+            ).filter(Boolean); // remove nulls
+
+            const courses = (
+              await Promise.all(
+                groupCourses.map(async (entry) => {
+                  const course = await storage.getCourse(entry.courseId);
+                  return course ? { id: course.id, title: course.title } : null;
+                })
+              )
+            ).filter(Boolean); // remove nulls
+
+            return {
+              id: group.id,
+              name: group.name,
+              description: group.description,
+              createdAt: group.createdAt,
+              members: users,
+              courses: courses,
+            };
+          })
+        );
+
+        res.json(detailedGroups);
+      } catch (error) {
+        console.error("Error fetching groups:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  app.post(
+    "/api/groups",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const { name, description, userIds = [], courseIds = [] } = req.body;
+
+        if (!name) {
+          return res.status(400).json({ message: "Group name is required" });
+        }
+
+        // Create group
+        const newGroup = await storage.createGroup({
+          name,
+          description: description || null,
+        });
+
+        // Create course access mappings for each course-user combination
+        if (Array.isArray(courseIds) && courseIds.length > 0) {
+          const courseAccessPromises = [];
+          for (const userId of userIds) {
+            for (const courseId of courseIds) {
+              courseAccessPromises.push(
+                storage.createCourseAccess({
+                  courseId,
+                  userId,
+                  groupId: newGroup.id,
+                  accessType: "view",
+                })
+              );
+            }
+          }
+          await Promise.all(courseAccessPromises);
+        }
+
+        // Link courses to group
+        if (Array.isArray(courseIds) && courseIds.length > 0) {
+          await Promise.all(
+            courseIds.map((courseId: number) =>
+              storage.createGroupCourse({ groupId: newGroup.id, courseId })
+            )
+          );
+        }
+
+        // Get courses accessible through this group
+        const groupCourses = await storage.getGroupCoursesByGroup(newGroup.id);
+        const courses = await Promise.all(
+          groupCourses.map(async (gc) => {
+            const course = await storage.getCourse(gc.courseId);
+            return course ? { id: course.id, title: course.title } : null;
+          })
+        ).then((results) => results.filter(Boolean));
+        res
+          .status(201)
+          .json({ message: "Group created successfully", group: newGroup });
+        try {
+          // Send email to each user
+          if (userIds.length > 0 && courses.length > 0) {
             await Promise.all(
-              groupMembers.map(async (member) => {
+              userIds.map(async (userId: number) => {
+                const user = await storage.getUser(userId);
+                if (user) {
+                  await sendGroupAssignmentEmail(
+                    user.email,
+                    user.username,
+                    newGroup.name,
+                    courses
+                  );
+                  // Create notifications
+                  if (user.id) {
+                    await storage.createNotification(
+                      user.id,
+                      "New Course Access",
+                      `You have been granted access to ${JSON.stringify(
+                        courses.map((course) => course?.title)
+                      )}`
+                    );
+                  }
+                }
+              })
+            );
+          }
+        } catch (err) {
+          console.log(err);
+        }
+      } catch (error) {
+        console.error("Error creating group:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  app.put(
+    "/api/groups/:id",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const groupId = parseInt(req.params.id);
+        const { name, userIds = [], courseIds = [] } = req.body;
+
+        // Get existing users and courses before update
+        const existingMembers = await storage.getGroupMembersByGroup(groupId);
+        const existingUserIds = existingMembers.map((member) => member.userId);
+
+        const existingGroupCourses = await storage.getGroupCoursesByGroup(
+          groupId
+        );
+        const existingCourseIds = existingGroupCourses.map((gc) => gc.courseId);
+
+        // Determine newly added users and courses
+        const newlyAddedUserIds = userIds.filter(
+          (userId) => !existingUserIds.includes(userId)
+        );
+        const newlyAddedCourseIds = courseIds.filter(
+          (courseId) => !existingCourseIds.includes(courseId)
+        );
+
+        // Update group name
+        await storage.updateGroup(groupId, { name });
+
+        // Remove and recreate all members and courses
+        await storage.deleteGroupMembers(groupId);
+        await storage.deleteGroupCourses(groupId);
+
+        // Add members
+        if (userIds.length > 0) {
+          await Promise.all(
+            userIds.map((userId) =>
+              storage.createGroupMember({ groupId, userId })
+            )
+          );
+        }
+
+        // Add courses
+        if (courseIds.length > 0) {
+          await Promise.all(
+            courseIds.map((courseId) =>
+              storage.createGroupCourse({ groupId, courseId })
+            )
+          );
+        }
+
+        // ✅ Recreate course access mappings
+        if (userIds.length > 0 && courseIds.length > 0) {
+          await Promise.all(
+            userIds.flatMap((userId) =>
+              courseIds.map((courseId) =>
+                storage.createCourseAccess({
+                  courseId,
+                  userId,
+                  groupId,
+                  accessType: "view",
+                })
+              )
+            )
+          );
+        }
+
+        // Get updated course details
+        const groupCourses = await storage.getGroupCoursesByGroup(groupId);
+        const courses = await Promise.all(
+          groupCourses.map(async (gc) => {
+            const course = await storage.getCourse(gc.courseId);
+            return course ? { id: course.id, title: course.title } : null;
+          })
+        ).then((results) => results.filter(Boolean));
+
+        // Get group details
+        const group = await storage.getGroup(groupId);
+
+        res.status(200).json({ message: "Group updated successfully" });
+
+        try {
+          // ✉️ Send email to newly added users (only)
+          if (newlyAddedUserIds.length > 0 && courses.length > 0 && group) {
+            await Promise.all(
+              newlyAddedUserIds.map(async (userId) => {
+                const user = await storage.getUser(userId);
+                if (user) {
+                  await sendGroupAssignmentEmail(
+                    user.email,
+                    user.username,
+                    group.name,
+                    courses
+                  );
+                }
+                // Create notifications
+                if (user.id) {
+                  await storage.createNotification(
+                    user.id,
+                    "New Course Access",
+                    `You have been granted access to ${JSON.stringify(
+                      courses.map((course) => course?.title)
+                    )}`
+                  );
+                }
+              })
+            );
+          }
+
+          // ✉️ Send email to ALL users if new course(s) were added
+          if (
+            newlyAddedCourseIds.length > 0 &&
+            group &&
+            existingMembers.length > 0
+          ) {
+            await Promise.all(
+              existingMembers.map(async (member) => {
                 const user = await storage.getUser(member.userId);
-                return user ? { id: user.id, username: user.username } : null;
+                if (user) {
+                  await sendGroupAssignmentEmail(
+                    user.email,
+                    user.username,
+                    group.name,
+                    courses
+                  );
+                }
+                // Create notifications
+                if (user.id) {
+                  await storage.createNotification(
+                    user.id,
+                    "New Course Access",
+                    `You have been granted access to ${JSON.stringify(
+                      courses.map((course) => course?.title)
+                    )}`
+                  );
+                }
               })
-            )
-          ).filter(Boolean); // remove nulls
-
-          const courses = (
-            await Promise.all(
-              groupCourses.map(async (entry) => {
-                const course = await storage.getCourse(entry.courseId);
-                return course ? { id: course.id, title: course.title } : null;
-              })
-            )
-          ).filter(Boolean); // remove nulls
-
-          return {
-            id: group.id,
-            name: group.name,
-            description: group.description,
-            createdAt: group.createdAt,
-            members: users,
-            courses: courses,
-          };
-        })
-      );
-
-      res.json(detailedGroups);
-    } catch (error) {
-      console.error("Error fetching groups:", error);
-      res.status(500).json({ message: "Internal server error" });
+            );
+          }
+        } catch (err) {
+          console.log(err);
+        }
+      } catch (error) {
+        console.error("Error updating group:", error);
+        res.status(500).json({ message: "Failed to update group" });
+      }
     }
-  });
+  );
 
-
-  app.post('/api/groups', isAuthenticated, hasRole(['admin']), async (req, res) => {
-    try {
-      const { name, description, userIds = [], courseIds = [] } = req.body;
-
-      if (!name) {
-        return res.status(400).json({ message: "Group name is required" });
-      }
-
-      // Create group
-      const newGroup = await storage.createGroup({
-        name,
-        description: description || null,
-      });
-
-      // Link users to group
-      if (Array.isArray(userIds) && userIds.length > 0) {
-        await Promise.all(
-          userIds.map((userId: number) =>
-            storage.createGroupMember({ groupId: newGroup.id, userId })
-          )
-        );
-      }
-
-      // Link courses to group
-      if (Array.isArray(courseIds) && courseIds.length > 0) {
-        await Promise.all(
-          courseIds.map((courseId: number) =>
-            storage.createGroupCourse({ groupId: newGroup.id, courseId })
-          )
-        );
-      }
-
-      res.status(201).json({ message: "Group created successfully", group: newGroup });
-    } catch (error) {
-      console.error("Error creating group:", error);
-      res.status(500).json({ message: "Internal server error" });
-    }
-  });
-
-  app.put('/api/groups/:id', isAuthenticated, hasRole(['admin']), async (req, res) => {
-    try {
+  app.delete(
+    "/api/groups/:id",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
       const groupId = parseInt(req.params.id);
-      const { name, userIds = [], courseIds = [] } = req.body;
 
-      // Update the group name
-      await storage.updateGroup(groupId, { name });
-
-      // Remove existing members & courses first
-      await storage.deleteGroupMembers(groupId);
-      await storage.deleteGroupCourses(groupId);
-
-      // Add new members
-      if (Array.isArray(userIds) && userIds.length > 0) {
-        await Promise.all(
-          userIds.map((userId: number) =>
-            storage.createGroupMember({ groupId, userId })
-          )
-        );
-      }
-
-      // Add new courses
-      if (Array.isArray(courseIds) && courseIds.length > 0) {
-        await Promise.all(
-          courseIds.map((courseId: number) =>
-            storage.createGroupCourse({ groupId, courseId })
-          )
-        );
-      }
-
-      res.status(200).json({ message: 'Group updated successfully' });
-    } catch (error) {
-      console.error('Error updating group:', error);
-      res.status(500).json({ message: 'Failed to update group' });
-    }
-  });
-
-  app.delete('/api/groups/:id', isAuthenticated, hasRole(['admin']), async (req, res) => {
-    const groupId = parseInt(req.params.id);
-
-    if (isNaN(groupId)) {
-      return res.status(400).json({ message: 'Invalid group ID' });
-    }
-
-    try {
-      // Delete all group members and courses first
-      await storage.deleteGroupMembersByGroupId(groupId);
-      await storage.deleteGroupCoursesByGroupId(groupId);
-
-      // Now delete the group itself
-      const success = await storage.deleteGroup(groupId);
-
-      if (!success) {
-        return res.status(404).json({ message: 'Group not found or already deleted' });
-      }
-
-      res.status(200).json({ message: 'Group deleted successfully' });
-    } catch (error) {
-      console.error('Error deleting group:', error);
-      res.status(500).json({ message: 'Internal server error' });
-    }
-  });
-
-
-
-  // Group members
-  app.get('/api/groups/:groupId/members', isAuthenticated, hasRole(['admin']), async (req, res) => {
-    try {
-      const groupId = parseInt(req.params.groupId);
       if (isNaN(groupId)) {
         return res.status(400).json({ message: "Invalid group ID" });
       }
-      const groupMembers = await storage.getGroupMembersByGroup(groupId);
 
-      // TODO: Consider using Prisma include to fetch user details efficiently
-      // For now, keep separate fetches
-      const membersWithUserDetails = await Promise.all(
-        groupMembers.map(async (member) => {
-          const user = await storage.getUser(member.userId);
-          // Explicitly handle null user case
-          const { password, ...userWithoutPassword } = user ?? {};
-          return {
-            ...member,
-            user: user ? userWithoutPassword : null,
-          };
-        })
-      );
+      try {
+        // 1. Delete all course access mappings associated with this group
+        await storage.deleteCourseAccessByGroupId(groupId);
 
-      res.json(membersWithUserDetails);
-    } catch (error) {
-      console.error("Error fetching group members:", error);
-      res.status(500).json({ message: "Internal server error" });
+        // 2. Delete all group members and group-course links
+        await storage.deleteGroupMembersByGroupId(groupId);
+        await storage.deleteGroupCoursesByGroupId(groupId);
+
+        // 3. Delete the group itself
+        const success = await storage.deleteGroup(groupId);
+
+        if (!success) {
+          return res
+            .status(404)
+            .json({ message: "Group not found or already deleted" });
+        }
+
+        res.status(200).json({ message: "Group deleted successfully" });
+      } catch (error) {
+        console.error("Error deleting group:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
     }
-  }
+  );
+
+  // Group members
+  app.get(
+    "/api/groups/:groupId/members",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const groupId = parseInt(req.params.groupId);
+        if (isNaN(groupId)) {
+          return res.status(400).json({ message: "Invalid group ID" });
+        }
+        const groupMembers = await storage.getGroupMembersByGroup(groupId);
+
+        // TODO: Consider using Prisma include to fetch user details efficiently
+        // For now, keep separate fetches
+        const membersWithUserDetails = await Promise.all(
+          groupMembers.map(async (member) => {
+            const user = await storage.getUser(member.userId);
+            // Explicitly handle null user case
+            const { password, ...userWithoutPassword } = user ?? {};
+            return {
+              ...member,
+              user: user ? userWithoutPassword : null,
+            };
+          })
+        );
+
+        res.json(membersWithUserDetails);
+      } catch (error) {
+        console.error("Error fetching group members:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
   );
 
   app.post(
@@ -1349,24 +2480,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
-  // Course access
   app.post(
     "/api/course-access",
     isAuthenticated,
     hasRole(["admin"]),
     async (req, res) => {
       try {
-        // Zod validation removed
-        // const accessData = insertCourseAccessSchema.parse(req.body);
         const { courseId, userId, groupId, accessType } = req.body;
 
-        if (typeof courseId !== 'number' || !accessType || (!userId && !groupId)) {
-          return res.status(400).json({ message: "Valid courseId, accessType, and either userId or groupId are required" });
+        if (
+          typeof courseId !== "number" ||
+          !accessType ||
+          (!userId && !groupId)
+        ) {
+          return res.status(400).json({
+            message:
+              "Valid courseId, accessType, and either userId or groupId are required",
+          });
         }
-        if (userId && typeof userId !== 'number') {
+
+        if (userId && typeof userId !== "number") {
           return res.status(400).json({ message: "Invalid userId provided" });
         }
-        if (groupId && typeof groupId !== 'number') {
+        if (groupId && typeof groupId !== "number") {
           return res.status(400).json({ message: "Invalid groupId provided" });
         }
 
@@ -1376,21 +2512,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(404).json({ message: "Course not found" });
         }
 
-        // Check if user or group exists
-        if (userId) {
-          const user = await storage.getUser(userId);
-          if (!user) {
-            return res.status(404).json({ message: "User not found" });
-          }
-        }
-
-        if (groupId) {
-          const group = await storage.getGroup(groupId);
-          if (!group) {
-            return res.status(404).json({ message: "Group not found" });
-          }
-        }
-
+        // Create access
         const newAccess = await storage.createCourseAccess({
           courseId,
           userId: userId || null,
@@ -1399,8 +2521,81 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
 
         res.status(201).json(newAccess);
+
+        try {
+          // Create notifications
+          if (userId) {
+            await storage.createNotification(
+              userId,
+              "New Course Access",
+              `You have been granted access to ${course.title}`
+            );
+          }
+
+          if (groupId) {
+            const members = await storage.getGroupMembersByGroup(groupId);
+            await Promise.all(
+              members.map((member) =>
+                storage.createNotification(
+                  member.userId,
+                  "New Course Access",
+                  `You have been granted access to ${course.title} through your group`
+                )
+              )
+            );
+          }
+
+          // Send email(s)
+          if (userId) {
+            const user = await storage.getUser(userId);
+            if (user) {
+              await sendGroupAssignmentEmail(
+                user.email,
+                user.username,
+                "Direct Access", // or some other label if group isn't used
+                [{ id: course.id, title: course.title }]
+              );
+              // Create notifications
+              if (user.id) {
+                await storage.createNotification(
+                  user.id,
+                  "New Course Access",
+                  `You have been granted access to ${course?.title}`
+                );
+              }
+            }
+          }
+
+          if (groupId) {
+            const group = await storage.getGroup(groupId);
+            const members = await storage.getGroupMembersByGroup(groupId); // list of { userId }
+            const users = await Promise.all(
+              members.map((member) => storage.getUser(member.userId))
+            );
+            const validUsers = users.filter((u) => u); // filter out nulls if any
+
+            await Promise.all(
+              validUsers.map((user) => {
+                sendGroupAssignmentEmail(
+                  user.email,
+                  user.username,
+                  group.name,
+                  [{ id: course.id, title: course.title }]
+                );
+                // Create notifications
+
+                storage.createNotification(
+                  user.id,
+                  "New Course Access",
+                  `You have been granted access to ${course?.title}`
+                );
+              })
+            );
+          }
+        } catch (error) {
+          console.log(error);
+        }
       } catch (error) {
-        // if (error instanceof z.ZodError) { ... }
         console.error("Error granting course access:", error);
         res.status(500).json({ message: "Internal server error" });
       }
@@ -1630,8 +2825,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         const deleted = await storage.deleteCategory(categoryId);
+
         if (!deleted) {
-          return res.status(404).json({ message: "Category not found" });
+          return res.status(400).json({
+            message: "Cannot delete category linked with existing courses",
+          });
         }
 
         res.status(204).send();
@@ -1710,6 +2908,176 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(201).json({ message: "Image uploaded successfully", url });
     }
   );
+
+  // --- Resource Upload Route ---
+  app.post(
+    "/api/resources",
+    isAuthenticated,
+    hasRole(["contributor", "admin"]),
+    uploadResource.single("file"),
+    async (req, res) => {
+      try {
+        if (!req.file) {
+          return res
+            .status(400)
+            .json({ message: "No resource file uploaded." });
+        }
+        const { courseId, lessonId, description } = req.body;
+        if (!courseId) {
+          return res.status(400).json({ message: "courseId is required" });
+        }
+        const courseIdNum = parseInt(courseId);
+        if (isNaN(courseIdNum)) {
+          return res.status(400).json({ message: "Invalid courseId" });
+        }
+        let lessonIdNum: number | null = null;
+        if (lessonId) {
+          lessonIdNum = parseInt(lessonId);
+          if (isNaN(lessonIdNum)) {
+            return res.status(400).json({ message: "Invalid lessonId" });
+          }
+        }
+        // Check course exists
+        const course = await storage.getCourse(courseIdNum);
+        if (!course) {
+          return res.status(404).json({ message: "Course not found" });
+        }
+        // Only allow instructor or admin to upload
+        if (
+          course.instructorId !== req.user!.id &&
+          req.user!.role !== "admin"
+        ) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+        // Save resource metadata
+        const resource = await storage.createResource({
+          courseId: courseIdNum,
+          lessonId: lessonIdNum,
+          uploaderId: req.user!.id,
+          filename: req.file.originalname,
+          mimetype: req.file.mimetype,
+          storagePath: `/uploads/resources/${req.file.filename}`,
+          description: description || null,
+        });
+        res.status(201).json(resource);
+      } catch (error) {
+        console.error("Error uploading resource:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // --- List Resources for a Course ---
+  app.get(
+    "/api/courses/:courseId/resources",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const courseId = parseInt(req.params.courseId);
+        if (isNaN(courseId)) {
+          return res.status(400).json({ message: "Invalid course ID" });
+        }
+        // Only allow enrolled users, instructor, or admin to view
+        const course = await storage.getCourse(courseId);
+        if (!course) {
+          return res.status(404).json({ message: "Course not found" });
+        }
+        if (
+          req.user!.role !== "admin" &&
+          course.instructorId !== req.user!.id
+        ) {
+          // Check enrollment
+          const enrollments = await storage.getEnrollmentsByUser(req.user!.id);
+          const enrolled = enrollments.some((e) => e.courseId === courseId);
+          if (!enrolled) {
+            return res.status(403).json({ message: "Forbidden" });
+          }
+        }
+        const resources = await storage.getResourcesByCourse(courseId);
+        res.json(resources);
+      } catch (error) {
+        console.error("Error fetching resources:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  // --- Download Resource File ---
+  app.get("/api/resources/:id/download", isAuthenticated, async (req, res) => {
+    try {
+      const resourceId = parseInt(req.params.id);
+      if (isNaN(resourceId)) {
+        return res.status(400).json({ message: "Invalid resource ID" });
+      }
+      const resource = await storage.getResourceById(resourceId);
+      if (!resource) {
+        return res.status(404).json({ message: "Resource not found" });
+      }
+      // Only allow enrolled users, instructor, or admin to download
+      const course = await storage.getCourse(resource.courseId);
+      if (!course) {
+        return res.status(404).json({ message: "Course not found" });
+      }
+      if (req.user!.role !== "admin" && course.instructorId !== req.user!.id) {
+        // Check enrollment
+        const enrollments = await storage.getEnrollmentsByUser(req.user!.id);
+        const enrolled = enrollments.some((e) => e.courseId === course.id);
+        if (!enrolled) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+      }
+      // Send file
+      const absPath = path.join(projectRoot, resource.storagePath);
+      if (!fs.existsSync(absPath)) {
+        return res.status(404).json({ message: "File not found on server" });
+      }
+      res.download(absPath, resource.filename);
+    } catch (error) {
+      console.error("Error downloading resource:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // --- Delete Resource File ---
+  app.delete("/api/resources/:id", isAuthenticated, async (req, res) => {
+    try {
+      const resourceId = parseInt(req.params.id);
+      if (isNaN(resourceId)) {
+        return res.status(400).json({ message: "Invalid resource ID" });
+      }
+      const resource = await storage.getResourceById(resourceId);
+      if (!resource) {
+        return res.status(404).json({ message: "Resource not found" });
+      }
+      // Only allow instructor, admin, or uploader to delete
+      const course = await storage.getCourse(resource.courseId);
+      if (!course) {
+        return res.status(404).json({ message: "Course not found" });
+      }
+      if (
+        req.user!.role !== "admin" &&
+        course.instructorId !== req.user!.id &&
+        resource.uploaderId !== req.user!.id
+      ) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+      // Delete file from disk
+      const absPath = path.join(projectRoot, resource.storagePath);
+      if (fs.existsSync(absPath)) {
+        try {
+          fs.unlinkSync(absPath);
+        } catch (err) {
+          console.warn("Failed to delete file from disk:", err);
+        }
+      }
+      // Delete from DB
+      await storage.deleteResource(resourceId);
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting resource:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
   // --- End Upload Routes ---
 
   // --- Certificate Creation Route ---
@@ -1796,13 +3164,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      doc
-        .fontSize(30)
-        .fillColor("black")
-        .text("Certificate of Completion", {
-          align: "center",
-          valign: "center",
-        });
+      doc.fontSize(30).fillColor("black").text("Certificate of Completion", {
+        align: "center",
+        valign: "center",
+      });
       doc.moveDown(2);
       doc
         .fontSize(24)
@@ -1823,10 +3188,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
 
       // Add certificate ID at bottom-right corner immediately after background
-      doc.fontSize(10).fillColor("gray").text(`Certificate ID: ${certId}`, doc.page.width - 300, doc.page.height - 90, {
-        allign: "right",
-        width: "250"
-      });
+      doc
+        .fontSize(10)
+        .fillColor("gray")
+        .text(
+          `Certificate ID: ${certId}`,
+          doc.page.width - 300,
+          doc.page.height - 90,
+          {
+            allign: "right",
+            width: "250",
+          }
+        );
 
       doc.end();
     } catch (error) {
@@ -1851,6 +3224,169 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   // --- End Get User Certificates Route ---
+
+  // Notification routes
+  app.get("/api/notifications", isAuthenticated, async (req, res) => {
+    try {
+      const notifications = await storage.prisma.notification.findMany({
+        where: { userId: req.user!.id },
+        orderBy: { createdAt: "desc" },
+      });
+      res.json(notifications);
+    } catch (error) {
+      console.error("Error fetching notifications:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.put("/api/notifications/:id/read", isAuthenticated, async (req, res) => {
+    try {
+      const notificationId = parseInt(req.params.id);
+      await storage.prisma.notification.update({
+        where: { id: notificationId, userId: req.user!.id },
+        data: { isRead: true },
+      });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error marking notification as read:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.put("/api/notifications/read-all", isAuthenticated, async (req, res) => {
+    try {
+      await storage.prisma.notification.updateMany({
+        where: { userId: req.user!.id },
+        data: { isRead: true },
+      });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error marking all notifications as read:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.get("/api/course-access", isAuthenticated, async (req, res) => {
+    try {
+      const accessData = await storage.getAllCourseAccessByUser({
+        id: req.user!.id,
+        role: req.user!.role,
+      });
+
+      res.json(accessData);
+    } catch (error) {
+      console.error("Error fetching course access:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.put(
+    "/api/course-access/:id",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const accessId = parseInt(req.params.id);
+        const { courseId, userId, groupId, accessType } = req.body;
+
+        if (
+          typeof courseId !== "number" ||
+          !accessType ||
+          (!userId && !groupId)
+        ) {
+          return res.status(400).json({
+            message:
+              "Valid courseId, accessType, and either userId or groupId are required",
+          });
+        }
+
+        // Get existing access
+        const existingAccess = await storage.prisma.courseAccess.findUnique({
+          where: { id: accessId },
+        });
+
+        if (!existingAccess) {
+          return res.status(404).json({ message: "Access record not found" });
+        }
+
+        const oldUserId = existingAccess.userId;
+        const oldGroupId = existingAccess.groupId;
+        const oldCourseId = existingAccess.courseId;
+
+        // Update the access
+        const updatedAccess = await storage.prisma.courseAccess.update({
+          where: { id: accessId },
+          data: {
+            courseId,
+            userId: userId || null,
+            groupId: groupId || null,
+            accessType,
+          },
+        });
+
+        res.json(updatedAccess);
+
+        // Compare and send email if user or course changed
+        if (userId && (userId !== oldUserId || courseId !== oldCourseId)) {
+          const user = await storage.getUser(userId);
+          const course = await storage.getCourse(courseId);
+          if (user && course) {
+            await sendGroupAssignmentEmail(
+              user.email,
+              user.username,
+              "Direct Access (Updated)",
+              [{ id: course.id, title: course.title }]
+            );
+          }
+        }
+
+        // Compare and send email to group users if group or course changed
+        if (groupId && (groupId !== oldGroupId || courseId !== oldCourseId)) {
+          const group = await storage.getGroup(groupId);
+          const members = await storage.getGroupMembersByGroup(groupId);
+          const users = await Promise.all(
+            members.map((m) => storage.getUser(m.userId))
+          );
+          const validUsers = users.filter((u) => u);
+
+          const course = await storage.getCourse(courseId);
+          if (group && course) {
+            await Promise.all(
+              validUsers.map((user) =>
+                sendGroupAssignmentEmail(
+                  user.email,
+                  user.username,
+                  group.name,
+                  [{ id: course.id, title: course.title }]
+                )
+              )
+            );
+          }
+        }
+      } catch (error) {
+        console.error("Error updating course access:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  app.delete(
+    "/api/course-access/:id",
+    isAuthenticated,
+    hasRole(["admin"]),
+    async (req, res) => {
+      try {
+        const accessId = parseInt(req.params.id);
+        await storage.prisma.courseAccess.delete({
+          where: { id: accessId },
+        });
+        res.status(204).send();
+      } catch (error) {
+        console.error("Error deleting course access:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
 
   // Add the HTTP server
   const httpServer = createServer(app);

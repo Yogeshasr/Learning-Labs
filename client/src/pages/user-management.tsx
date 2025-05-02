@@ -27,13 +27,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  UserPlus,
-  Search,
-  MoreHorizontal,
-  Loader2,
-} from "lucide-react";
+import { UserPlus, Search, MoreHorizontal, Loader2 } from "lucide-react";
 import { useLocation } from "wouter";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
 
 interface User {
   id: number;
@@ -42,13 +39,16 @@ interface User {
   firstName?: string;
   lastName?: string;
   role: string;
+  status: string; // Added status field
 }
 
 export default function UserManagement() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
+  const { toast } = useToast();
 
   const [users, setUsers] = useState<User[]>([]);
+  const [draftUsers, setDraftUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
@@ -69,11 +69,12 @@ export default function UserManagement() {
 
   useEffect(() => {
     fetchUsers();
+    fetchDraftUsers();
   }, []);
 
   const fetchUsers = async () => {
     try {
-      const response = await fetch("/api/users");
+      const response = await fetch("/api/all/users");
       if (!response.ok) throw new Error("Failed to fetch users");
       const data = await response.json();
       setUsers(data);
@@ -83,6 +84,118 @@ export default function UserManagement() {
       setLoading(false);
     }
   };
+
+  const fetchDraftUsers = async () => {
+    try {
+      const response = await fetch("/api/draft-users");
+      if (!response.ok) throw new Error("Failed to fetch draft users");
+      const data = await response.json();
+      setDraftUsers(data);
+    } catch (error) {
+      console.error("Error fetching draft users:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTabChange = (value: string) => {
+    setLoading(true);
+    if (value === "active") {
+      fetchUsers();
+    } else if (value === "pending") {
+      fetchDraftUsers();
+    }
+  };
+
+  const generateRandomPassword = () => {
+    const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const lower = "abcdefghijklmnopqrstuvwxyz";
+    const numbers = "0123456789";
+    const special = "!@#$%^&*()";
+
+    let password = "";
+    password += upper.charAt(Math.floor(Math.random() * upper.length));
+    password += lower.charAt(Math.floor(Math.random() * lower.length));
+    password += numbers.charAt(Math.floor(Math.random() * numbers.length));
+    password += special.charAt(Math.floor(Math.random() * special.length));
+
+    const allChars = upper + lower + numbers + special;
+    for (let i = 0; i < 2; i++) {
+      password += allChars.charAt(Math.floor(Math.random() * allChars.length));
+    }
+
+    return password
+      .split("")
+      .sort(() => 0.5 - Math.random())
+      .join("");
+  };
+
+  const handleApproveUser = async (userId: number) => {
+    const generatedPassword = generateRandomPassword();
+    try {
+      const response = await fetch(`/api/users/${userId}/approve`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ password: generatedPassword }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to approve user");
+      }
+      toast({
+        title: "User Approved",
+        description: "The user has been approved and notified via email.",
+        variant: "success",
+      });
+      fetchDraftUsers(); // Refresh the list after approval
+    } catch (error) {
+      console.error("Error approving user:", error);
+      toast({
+        title: "Error",
+        description:
+          error instanceof Error ? error.message : "Failed to approve user",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleRejectUser = async (userId: number) => {
+    try {
+      const response = await fetch(`/api/users/${userId}/reject`, {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to reject user");
+      }
+
+      toast({
+        title: "User Rejected",
+        description: "The user has been rejected and notified via email.",
+        variant: "success",
+      });
+
+      // Delay refreshing the list by 1 second
+      fetchDraftUsers();
+      // setTimeout(() => {
+      //   fetchDraftUsers();
+      // }, 3000);
+
+    } catch (error) {
+      console.error("Error rejecting user:", error);
+      toast({
+        title: "Error",
+        description:
+          error instanceof Error ? error.message : "Failed to reject user",
+        variant: "destructive",
+      });
+
+    }
+  };
+
 
   const handleViewDetails = async (userId: number) => {
     try {
@@ -118,11 +231,19 @@ export default function UserManagement() {
       });
 
       if (!response.ok) throw new Error("Failed to update user");
-
+      toast({
+        title: "Success",
+        description: "User updated successfully",
+      });
       setEditDialogOpen(false);
       fetchUsers();
     } catch (err) {
       console.error("Error updating user:", err);
+      toast({
+        title: "Error",
+        description: "Something went wrong",
+        variant: "destructive",
+      });
     }
   };
 
@@ -138,14 +259,60 @@ export default function UserManagement() {
         method: "DELETE",
       });
       if (!response.ok) throw new Error("Failed to delete user");
+
+      const result = await response.json();
+
       fetchUsers();
+      toast({
+        title: "Success",
+        description: result.message || "User marked as inactive",
+      });
     } catch (error) {
       console.error("Error deleting user:", error);
+      toast({
+        title: "Error",
+        description: "Something went wrong",
+        variant: "destructive",
+      });
     } finally {
       setDeleteDialogOpen(false);
       setUserToDelete(null);
     }
   };
+
+  const confirmStatusChange = async () => {
+    if (!userToDelete) return;
+    const newStatus = userToDelete.status === "active" ? "inactive" : "active";
+
+    try {
+      const response = await fetch(`/api/users/${userToDelete.id}/status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+
+      if (!response.ok) throw new Error("Failed to update user status");
+
+      const result = await response.json();
+
+      fetchUsers();
+      toast({
+        title: "Success",
+        description: result.message || `User marked as ${newStatus}`,
+      });
+    } catch (error) {
+      console.error("Error updating user status:", error);
+      toast({
+        title: "Error",
+        description: "Something went wrong",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleteDialogOpen(false);
+      setUserToDelete(null);
+    }
+  };
+
 
   const filteredUsers = users.filter((user) => {
     const term = searchTerm.toLowerCase();
@@ -158,7 +325,7 @@ export default function UserManagement() {
 
     const matchesRole = roleFilter === "all" || user.role === roleFilter;
 
-    return matchesSearch && matchesRole;
+    return matchesSearch && matchesRole && user.status !== "draft"; //Exclude draft users from main list
   });
 
   return (
@@ -202,66 +369,154 @@ export default function UserManagement() {
           </select>
         </div>
 
-        <div className="bg-white dark:bg-slate-800 overflow-hidden shadow rounded-lg">
-          {loading ? (
-            <div className="flex justify-center items-center p-8">
-              <Loader2 className="h-8 w-8 animate-spin" />
+        <Tabs defaultValue="active" onValueChange={handleTabChange}>
+          <TabsList>
+            <TabsTrigger value="active">Active Users</TabsTrigger>
+            <div className="relative">
+              <TabsTrigger value="pending">Pending Approvals</TabsTrigger>
+              {draftUsers.length > 0 && (
+                <span className="absolute -top-1 -right-2 bg-red-500 text-white text-xs font-semibold px-1.5 rounded-full">
+                  {draftUsers.length}
+                </span>
+              )}
             </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Role</TableHead>
-                  <TableHead className="w-14"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredUsers.map((user) => (
-                  <TableRow key={user.id}>
-                    <TableCell className="font-medium">
-                      {user.firstName && user.lastName
-                        ? `${user.firstName} ${user.lastName}`
-                        : user.username}
-                    </TableCell>
-                    <TableCell>{user.email}</TableCell>
-                    <TableCell className="capitalize">{user.role}</TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="sm">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                          <DropdownMenuItem
-                            onClick={() => handleViewDetails(user.id)}
+          </TabsList>
+          <TabsContent value="active">
+            <div className="bg-white dark:bg-slate-800 overflow-hidden shadow rounded-lg">
+              {loading ? (
+                <div className="flex justify-center items-center p-8">
+                  <Loader2 className="h-8 w-8 animate-spin" />
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Role</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="w-14"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredUsers.map((user) => (
+                      <TableRow key={user.id}>
+                        <TableCell className="font-medium">
+                          {user.username}
+                        </TableCell>
+                        <TableCell>{user.email}</TableCell>
+                        <TableCell className="capitalize">
+                          {user.role}
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={`px-2 py-1 rounded-full capitalize 
+      ${user.status === "active"
+                                ? "bg-green-100 text-green-800"
+                                : "bg-red-100 text-red-800"}`}
                           >
-                            View Details
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleEdit(user)}>
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-red-600 dark:text-red-400"
-                            onClick={() => handleDeletePrompt(user)}
-                          >
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </div>
-      </div>
+                            {user.status}
+                          </span>
+                        </TableCell>
 
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                              <DropdownMenuItem
+                                onClick={() => handleViewDetails(user.id)}
+                              >
+                                View Details
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => handleEdit(user)}
+                              >
+                                Edit
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-red-600 dark:text-red-400"
+                                onClick={() => handleDeletePrompt(user)}
+                              >
+                                {user.status === "active" ? "Inactivate" : "Activate"}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+          </TabsContent>
+          <TabsContent value="pending">
+            <div className="bg-white dark:bg-slate-800 overflow-hidden shadow rounded-lg">
+              {loading ? (
+                <div className="flex justify-center items-center p-8">
+                  <Loader2 className="h-8 w-8 animate-spin" />
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Role</TableHead>
+                      <TableHead className="w-28">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {draftUsers.filter((user) => user.status === "draft").length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center py-4 text-slate-500">
+                          No data available
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      draftUsers
+                        .filter((user) => user.status === "draft")
+                        .map((user) => (
+                          <TableRow key={user.id}>
+                            <TableCell className="font-medium">
+                              {user.firstName && user.lastName
+                                ? `${user.firstName} ${user.lastName}`
+                                : user.username}
+                            </TableCell>
+                            <TableCell>{user.email}</TableCell>
+                            <TableCell className="capitalize">
+                              {user.role}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex gap-2">
+                                <Button size="sm" onClick={() => handleApproveUser(user.id)}>
+                                  Approve
+                                </Button>
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => handleRejectUser(user.id)}
+                                >
+                                  Reject
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                    )}
+                  </TableBody>
+
+                </Table>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
       {/* View Details Dialog */}
       <Dialog open={isDetailsOpen} onOpenChange={setIsDetailsOpen}>
         <DialogContent>
@@ -350,7 +605,10 @@ export default function UserManagement() {
               <option value="admin">Admin</option>
             </select>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setEditDialogOpen(false)}
+              >
                 Cancel
               </Button>
               <Button type="submit">Save</Button>
@@ -363,18 +621,24 @@ export default function UserManagement() {
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm Deletion</DialogTitle>
+            <DialogTitle>
+              {userToDelete?.status === "active" ? "Mark as Inactive" : "Activate User"}
+            </DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete{" "}
-              <span className="font-semibold">{userToDelete?.username}</span>?
+              Are you sure you want to {userToDelete?.status === "active" ? "mark" : "activate"}{" "}
+              <span className="font-semibold">{userToDelete?.username}</span>{" "}
+              {userToDelete?.status === "active" ? "as inactive" : "as active"}?
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteDialogOpen(false)}
+            >
               No
             </Button>
-            <Button variant="destructive" onClick={confirmDelete}>
-              Yes, Delete
+            <Button variant={userToDelete?.status === "active" ? "destructive" : "default"} onClick={confirmStatusChange}>
+              {userToDelete?.status === "active" ? "Yes, Mark Inactive" : "Yes, Activate"}
             </Button>
           </DialogFooter>
         </DialogContent>

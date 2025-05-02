@@ -26,7 +26,7 @@ enum CourseDifficulty {
 enum CourseStatus {
   draft
   published
-  archived
+  rejected
 }
 
 enum QuestionType {
@@ -63,6 +63,7 @@ model User {
   firstName      String?  @map("first_name")
   lastName       String?  @map("last_name")
   role           UserRole @default(employee)
+  status         String   @default("active")
   profilePicture String?  @map("profile_picture")
   createdAt      DateTime @default(now()) @map("created_at")
 
@@ -77,6 +78,9 @@ model User {
   certificates       Certificate[]
   GroupUser          GroupUser[]
   Comment            Comment[]
+  Resource           Resource[]
+  notifications  Notification[]  // 1-to-many (One User can have many Notifications)
+
 
   @@map("users")
 }
@@ -86,6 +90,7 @@ model Category {
   name      String   @unique
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  courses   Course[]
 
   @@map("categories")
 }
@@ -94,7 +99,8 @@ model Course {
   id           Int               @id @default(autoincrement())
   title        String
   description  String
-  category     String? // Added category field
+  categoryId   Int?              @map("category_id")
+  category     Category?         @relation(fields: [categoryId], references: [id])
   thumbnail    String?
   duration     Int? // in minutes
   difficulty   CourseDifficulty?
@@ -110,6 +116,7 @@ model Course {
   courseAccess CourseAccess[] @relation("CourseAccess")
   certificates Certificate[]
   groups       GroupCourse[]
+  Resource     Resource[]
 
   @@map("courses")
 }
@@ -121,27 +128,37 @@ model Module {
   position Int
 
   // Relations
-  course      Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  lessons     Lesson[]
-  assessments Assessment[]
+  course            Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons           Lesson[]
+  Question          Question[]
+  AssessmentAttempt AssessmentAttempt[]
 
   @@map("modules")
 }
 
+enum LessonType {
+  video
+  text
+  assessment
+}
+
 model Lesson {
-  id       Int     @id @default(autoincrement())
-  moduleId Int     @map("module_id")
+  id       Int        @id @default(autoincrement())
+  type     LessonType @default(text)
+  moduleId Int        @map("module_id")
   title    String
   content  String?
-  videoUrl String? @map("video_url")
+  videoUrl String?    @map("video_url")
   duration Int? // in seconds
   position Int
-
+  summary  String?    @default("")
+ 
   // Relations
   module         Module           @relation(fields: [moduleId], references: [id], onDelete: Cascade)
   lessonProgress LessonProgress[]
   Comment        Comment[]
-
+  Resource       Resource[]
+   
   @@map("lessons")
 }
 
@@ -160,53 +177,43 @@ model Enrollment {
   @@map("enrollments")
 }
 
-model Assessment {
-  id           Int      @id @default(autoincrement())
-  title        String
-  description  String?
-  moduleId     Int?     @map("module_id") // Optional relation to module
-  timeLimit    Int?     @map("time_limit") // in minutes
-  passingScore Int?     @map("passing_score") // percentage
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  // Relations
-  module             Module?             @relation(fields: [moduleId], references: [id])
-  questions          Question[]
-  assessmentAttempts AssessmentAttempt[]
-
-  @@map("assessments")
-}
-
 model Question {
-  id            Int          @id @default(autoincrement())
-  assessmentId  Int          @map("assessment_id")
-  questionText  String       @map("question_text")
-  questionType  QuestionType @map("question_type")
-  options       Json?        @default("{}") // For multiple choice questions
-  correctAnswer String?      @map("correct_answer") // For true/false and short answers
+  id            Int                @id @default(autoincrement())
+  moduleId      Int                @map("module_id")
+  questionText  String             @map("question_text")
+  difficulty    QuestionDifficulty
+  options       Json               @default("{}") // For multiple choice questions (array of 4)
+  correctAnswer String             @map("correct_answer") // The correct option (or index)
   explanation   String?
-  points        Int          @default(1)
-  position      Int
+  createdAt     DateTime           @default(now()) @map("created_at")
 
   // Relations
-  assessment Assessment @relation(fields: [assessmentId], references: [id])
+  module Module @relation(fields: [moduleId], references: [id])
 
   @@map("questions")
 }
 
+enum QuestionDifficulty {
+  beginner
+  intermediate
+  advanced
+}
+
 model AssessmentAttempt {
-  id           Int              @id @default(autoincrement())
-  userId       Int              @map("user_id")
-  assessmentId Int              @map("assessment_id")
-  startedAt    DateTime         @default(now()) @map("started_at")
-  completedAt  DateTime?        @map("completed_at")
-  score        Int?
-  answers      Json?            @default("{}")
-  status       AssessmentStatus @default(in_progress)
+  id          Int              @id @default(autoincrement())
+  userId      Int              @map("user_id")
+  moduleId    Int              @map("module_id")
+  startedAt   DateTime         @default(now()) @map("started_at")
+  completedAt DateTime?        @map("completed_at")
+  score       Int?
+  status      AssessmentStatus @default(in_progress)
+  passed      Boolean          @default(false)
+  answers     Json             @default("{}") // Array of {questionId, selectedOption, isCorrect}
+  questionIds Json             @default("[]") // Array of question IDs used in this attempt
 
   // Relations
-  user       User       @relation(fields: [userId], references: [id])
-  assessment Assessment @relation(fields: [assessmentId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  module Module @relation(fields: [moduleId], references: [id])
 
   @@map("assessment_attempts")
 }
@@ -329,7 +336,6 @@ model GroupCourse {
   @@map("group_course")
 }
 
-
 model Comment {
   id        Int      @id @default(autoincrement())
   lessonId  Int
@@ -342,4 +348,36 @@ model Comment {
   user    User      @relation(fields: [userId], references: [id])
   parent  Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
   replies Comment[] @relation("CommentReplies")
+}
+
+model Resource {
+  id          Int      @id @default(autoincrement())
+  courseId    Int      @map("course_id")
+  lessonId    Int?     @map("lesson_id")
+  uploaderId  Int      @map("uploader_id")
+  filename    String
+  mimetype    String
+  storagePath String   @map("storage_path")
+  uploadedAt  DateTime @default(now()) @map("uploaded_at")
+  description String?
+
+  course   Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lesson   Lesson? @relation(fields: [lessonId], references: [id])
+  uploader User    @relation(fields: [uploaderId], references: [id])
+
+  @@map("resources")
+}
+
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("notifications")
 }
