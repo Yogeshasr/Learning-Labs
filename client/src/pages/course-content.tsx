@@ -210,6 +210,48 @@ function AssessmentLessonWrapper({
   );
 }
 
+function getNextLesson(modules, lessonProgress) {
+  if (!modules?.length) return null;
+
+  const completedLessonIds = new Set(
+    (lessonProgress || []).filter(p => p.status === "completed").map(p => p.lessonId)
+  );
+
+  let firstLesson = null;
+  let lastLesson = null;
+
+  const sortedModules = modules
+    .slice()
+    .sort((a, b) => a.position - b.position);
+
+  for (const module of sortedModules) {
+    const sortedLessons = module.lessons
+      .filter(lesson => lesson.position >= 0)
+      .sort((a, b) => a.position - b.position);
+
+    if (sortedLessons.length === 0) continue;
+
+    // Track first and last lessons
+    if (!firstLesson) {
+      firstLesson = { module, lesson: sortedLessons[0] };
+    }
+    lastLesson = { module, lesson: sortedLessons[sortedLessons.length - 1] };
+
+    for (const lesson of sortedLessons) {
+      if (!completedLessonIds.has(lesson.id)) {
+        return { module, lesson };
+      }
+    }
+  }
+
+  if (!lessonProgress || lessonProgress.length === 0) {
+    return firstLesson;
+  }
+
+  return lastLesson; // All completed
+}
+
+
 export default function CourseContent() {
   const [activeAssessmentModuleId, setActiveAssessmentModuleId] = useState<
     number | null
@@ -350,6 +392,7 @@ export default function CourseContent() {
 
   const [lessonSummary, setLessonSummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [captionExists, setCaptionExists] = useState(false);
 
   const fetchLessonSummary = async (lessonId: number) => {
     try {
@@ -365,6 +408,16 @@ export default function CourseContent() {
       setSummaryLoading(false);
     }
   };
+
+  const captionUrl = currentLesson?.videoUrl
+    ?.replace('/videos/', '/captions/')
+    ?.replace(/\.(mp4|webm|ogg|mov|avi)$/i, '.vtt');
+
+  useEffect(() => {
+    captionUrl && fetch(captionUrl, { method: 'HEAD' })  // HEAD request: lightweight existence check
+      .then(res => setCaptionExists(res.ok))
+      .catch(() => setCaptionExists(false));
+  }, [captionUrl]);
 
   // Fetch summary when currentLesson changes
   useEffect(() => {
@@ -409,8 +462,8 @@ export default function CourseContent() {
 
         setCourse(data);
 
-        setCurrentModule(data.modules?.[0] || null);
-        setCurrentLesson(data.modules?.[0]?.lessons?.[0] || null);
+        // setCurrentModule(data.modules?.[0] || null);
+        // setCurrentLesson(data.modules?.[0]?.lessons?.[0] || null);
 
         if (user?.id) {
           try {
@@ -428,6 +481,10 @@ export default function CourseContent() {
                 {}
               );
               setLessonProgressMap(progressMap);
+              const {module,lesson} = getNextLesson(data.modules,progressData)
+              console.log("moduleId,lessonId",module,lesson)
+              setCurrentModule(module);
+              setCurrentLesson(lesson);
             } else {
               console.error(
                 "Failed to fetch lesson progress:",
@@ -862,7 +919,17 @@ export default function CourseContent() {
                       src={currentLesson.videoUrl}
                       className="w-full h-full"
                       controls
-                    ></video>
+                    >
+                      {captionExists && <track
+                        src={currentLesson.videoUrl.replace('/videos/', '/captions/').replace(/\.(mp4|webm|ogg|mov|avi)$/i, '.vtt')}
+                        kind="captions"
+                        srcLang="en"  // Using generated/default value
+                        label="English"   // Using generated/default value
+                        default
+                        // Consider removing 'default' unless you accept the risk
+                        // of it trying to load a non-existent file by default.
+                        />}
+                    </video>
                   </div>
                 ) : currentLesson.content ? (
                   <div className="p-6 prose dark:prose-invert max-w-none prose-sm sm:prose-base">
