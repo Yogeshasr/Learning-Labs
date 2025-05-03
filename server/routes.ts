@@ -707,7 +707,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
-
   // Course routes
   // --- Comments API ---
 
@@ -1008,6 +1007,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
 
         res.status(201).json(newCourse);
+        try {
+          await axios.post("http://localhost:5001/generate_image", {
+            course_id: newCourse.id,
+            course_title: title,
+            course_description: description,
+          });
+        } catch (err) {
+          console.log(err);
+        }
       } catch (error) {
         // if (error instanceof z.ZodError) { ... } // Add back Zod error handling if used
         console.error("Error creating course:", error);
@@ -1707,50 +1715,126 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 },
               });
             }
-          }
-
-          // Get the module and course
-          const module = await storage.prisma.module.findUnique({
-            where: { id: attempt.moduleId },
-          });
-
-          if (module) {
-            const courseId = module.courseId;
-            // Get all modules for the course
-            const allModules = await storage.prisma.module.findMany({
-              where: { courseId },
+            await storage.createActivityLog({
+              userId: req.user!.id,
+              action: "completed_assessment",
+              resourceType: "lesson",
+              resourceId: assessmentLesson.id,
+              metadata: {}, // Prisma expects JsonNull or an object
             });
-            const allModuleIds = allModules.map((m) => m.id);
 
-            // For each module, check if the user has a passed attempt
-            let allPassed = true;
-            for (const modId of allModuleIds) {
-              const passedAttempt =
-                await storage.prisma.assessmentAttempt.findFirst({
-                  where: {
-                    userId: req.user!.id,
-                    moduleId: modId,
-                    passed: true,
-                  },
-                });
-              if (!passedAttempt) {
-                allPassed = false;
-                break;
-              }
-            }
-
-            // If all passed, update enrollment progress to 100%
-            if (allPassed) {
-              const enrollment = await storage.prisma.enrollment.findFirst({
-                where: { userId: req.user!.id, courseId },
+            // Get the module and course
+            const module = await storage.prisma.module.findUnique({
+              where: { id: attempt.moduleId },
+            });
+            if (module) {
+              const courseId = module.courseId;
+              // Get all modules for the course
+              const allModules = await storage.prisma.module.findMany({
+                where: { courseId },
               });
-              console.log(" found:", enrollment); // <-- Log enrollment record
-
-              if (enrollment) {
-                await storage.prisma.enrollment.update({
-                  where: { id: enrollment.id },
-                  data: { progress: 100, completedAt: new Date() },
+              const allModuleIds = allModules.map((m) => m.id);
+              // For each module, check if the user has a passed attempt
+              let allPassed = true;
+              for (const modId of allModuleIds) {
+                const passedAttempt =
+                  await storage.prisma.assessmentAttempt.findFirst({
+                    where: {
+                      userId: req.user!.id,
+                      moduleId: modId,
+                      passed: true,
+                    },
+                  });
+                if (!passedAttempt) {
+                  allPassed = false;
+                  break;
+                }
+              }
+              // If all passed, update enrollment progress to 100%
+              if (allPassed) {
+                const enrollment = await storage.prisma.enrollment.findFirst({
+                  where: { userId: req.user!.id, courseId },
                 });
+                if (enrollment) {
+                  // await storage.prisma.enrollment.update({
+                  //   where: { id: enrollment.id },
+                  //   data: { progress: 100, completedAt: new Date() },
+                  // });
+                  // --- Corrected Progress Calculation ---
+                  // 1. Get all modules for the course
+                  const allModules = await storage.getModulesByCourse(
+                    module.courseId
+                  );
+                  const allModuleIds = allModules.map((m) => m.id);
+
+                  // 2. Get all lessons for all modules in the course
+                  let allLessonsInCourse: Lesson[] = [];
+                  for (const modId of allModuleIds) {
+                    const lessons = await storage.getLessonsByModule(modId);
+                    allLessonsInCourse = allLessonsInCourse.concat(lessons);
+                  }
+                  const totalLessonsInCourse = allLessonsInCourse.length;
+
+                  // 3. Get all completed lesson progress records for the user in this course
+                  // Use the specific function if available, otherwise filter all progress
+                  // Assuming getLessonProgressByUserAndCourse exists and is efficient:
+                  const courseProgressRecords =
+                    await storage.getLessonProgressByUserAndCourse(
+                      req.user!.id,
+                      module.courseId
+                    );
+                  const completedLessonsInCourse = courseProgressRecords.filter(
+                    (p) => p.status === "completed"
+                  ).length;
+
+                  // 4. Calculate overall progress percentage
+                  const progressPercentage =
+                    totalLessonsInCourse > 0
+                      ? Math.round(
+                          (completedLessonsInCourse / totalLessonsInCourse) *
+                            100
+                        )
+                      : 0; // Avoid division by zero if course has no lessons
+
+                  // 5. Update enrollment with correct progress and completion status
+                  await storage.updateEnrollment(enrollment.id, {
+                    progress: progressPercentage,
+                    completedAt: progressPercentage === 100 ? new Date() : null,
+                  });
+
+                  // Auto-create certificate if completed and not exists
+                  if (progressPercentage === 100) {
+                    console.log(
+                      "Progress is 100%, checking for existing certificate..."
+                    );
+                    const existingCerts = await storage.getCertificatesByUser(
+                      req.user!.id
+                    );
+                    const existing = existingCerts.find(
+                      (c) => c.courseId === module.courseId
+                    );
+                    if (!existing) {
+                      console.log(
+                        "No existing certificate found, creating new certificate..."
+                      );
+                      const crypto = await import("crypto");
+                      const certHash = crypto.randomBytes(16).toString("hex");
+                      await storage.createCertificate({
+                        userId: req.user!.id,
+                        courseId: module.courseId,
+                        certificateId: certHash,
+                        // issueDate: new Date(),
+                        certificateUrl: null,
+                      });
+                      console.log("Certificate created with ID:", certHash);
+                    } else {
+                      console.log(
+                        "Certificate already exists for this user and course."
+                      );
+                    }
+                  }
+                  // --- End Corrected Progress Calculation ---
+                }
               }
             }
           }
@@ -2698,8 +2782,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const progressPercentage =
               totalLessonsInCourse > 0
                 ? Math.round(
-                  (completedLessonsInCourse / totalLessonsInCourse) * 100
-                )
+                    (completedLessonsInCourse / totalLessonsInCourse) * 100
+                  )
                 : 0; // Avoid division by zero if course has no lessons
 
             // 5. Update enrollment with correct progress and completion status
@@ -3001,6 +3085,164 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
   );
+
+  // --- View Resource File ---
+  app.get("/api/resources/:id/view", isAuthenticated, async (req, res) => {
+    try {
+      const resourceId = parseInt(req.params.id);
+      if (isNaN(resourceId)) {
+        return res.status(400).json({ message: "Invalid resource ID" });
+      }
+      const resource = await storage.getResourceById(resourceId);
+      if (!resource) {
+        return res.status(404).json({ message: "Resource not found" });
+      }
+      // Only allow enrolled users, instructor, or admin to view
+      const course = await storage.getCourse(resource.courseId);
+      if (!course) {
+        return res.status(404).json({ message: "Course not found" });
+      }
+      if (req.user!.role !== "admin" && course.instructorId !== req.user!.id) {
+        // Check enrollment
+        const enrollments = await storage.getEnrollmentsByUser(req.user!.id);
+        const enrolled = enrollments.some((e) => e.courseId === course.id);
+        if (!enrolled) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+      }
+      // Serve file
+      const absPath = path.join(projectRoot, resource.storagePath);
+      if (!fs.existsSync(absPath)) {
+        return res.status(404).json({ message: "File not found on server" });
+      }
+      res.setHeader("Content-Type", resource.mimetype);
+      res.sendFile(absPath);
+    } catch (error) {
+      console.error("Error viewing resource:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // --- Create Note ---
+  app.post("/api/notes", isAuthenticated, async (req, res) => {
+    try {
+      const { lessonId, content } = req.body;
+      if (!lessonId || !content) {
+        return res
+          .status(400)
+          .json({ message: "Lesson ID and content are required" });
+      }
+      const userId = req.user!.id;
+      const note = await storage.saveNote({
+        userId,
+        lessonId,
+        content,
+      });
+      res.status(201).json(note);
+    } catch (error) {
+      console.error("Error creating note:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // --- Get Note ---
+  app.get("/api/notes", isAuthenticated, async (req, res) => {
+    try {
+      const { lessonId, userId } = req.query;
+      if (!lessonId || !userId) {
+        return res
+          .status(400)
+          .json({ message: "Lesson ID and user ID are required" });
+      }
+      const note = await storage.getNoteByLessonAndUser(
+        parseInt(lessonId as string),
+        parseInt(userId as string)
+      );
+      res.json(note);
+    } catch (error) {
+      console.error("Error fetching note:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // --- View Resource File ---
+  app.get("/api/resources/:id/view", isAuthenticated, async (req, res) => {
+    try {
+      const resourceId = parseInt(req.params.id);
+      if (isNaN(resourceId)) {
+        return res.status(400).json({ message: "Invalid resource ID" });
+      }
+      const resource = await storage.getResourceById(resourceId);
+      if (!resource) {
+        return res.status(404).json({ message: "Resource not found" });
+      }
+      // Only allow enrolled users, instructor, or admin to view
+      const course = await storage.getCourse(resource.courseId);
+      if (!course) {
+        return res.status(404).json({ message: "Course not found" });
+      }
+      if (req.user!.role !== "admin" && course.instructorId !== req.user!.id) {
+        // Check enrollment
+        const enrollments = await storage.getEnrollmentsByUser(req.user!.id);
+        const enrolled = enrollments.some((e) => e.courseId === course.id);
+        if (!enrolled) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+      }
+      // Serve file
+      const absPath = path.join(projectRoot, resource.storagePath);
+      if (!fs.existsSync(absPath)) {
+        return res.status(404).json({ message: "File not found on server" });
+      }
+      res.setHeader("Content-Type", resource.mimetype);
+      res.sendFile(absPath);
+    } catch (error) {
+      console.error("Error viewing resource:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // --- Create Note ---
+  app.post("/api/notes", isAuthenticated, async (req, res) => {
+    try {
+      const { lessonId, content } = req.body;
+      if (!lessonId || !content) {
+        return res
+          .status(400)
+          .json({ message: "Lesson ID and content are required" });
+      }
+      const userId = req.user!.id;
+      const note = await storage.saveNote({
+        userId,
+        lessonId,
+        content,
+      });
+      res.status(201).json(note);
+    } catch (error) {
+      console.error("Error creating note:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // --- Get Note ---
+  app.get("/api/notes", isAuthenticated, async (req, res) => {
+    try {
+      const { lessonId, userId } = req.query;
+      if (!lessonId || !userId) {
+        return res
+          .status(400)
+          .json({ message: "Lesson ID and user ID are required" });
+      }
+      const note = await storage.getNoteByLessonAndUser(
+        parseInt(lessonId as string),
+        parseInt(userId as string)
+      );
+      res.json(note);
+    } catch (error) {
+      console.error("Error fetching note:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
 
   // --- Download Resource File ---
   app.get("/api/resources/:id/download", isAuthenticated, async (req, res) => {
@@ -3390,6 +3632,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Add the HTTP server
   const httpServer = createServer(app);
+
+  // New endpoint to get lesson summary
+  app.get("/api/lessons/:id/summary", isAuthenticated, async (req, res) => {
+    try {
+      const lessonId = parseInt(req.params.id);
+      if (isNaN(lessonId)) {
+        return res.status(400).json({ message: "Invalid lesson ID" });
+      }
+
+      const lessonSummary = await storage.getLessonSummary(lessonId);
+      if (!lessonSummary) {
+        return res.status(404).json({ message: "Lesson summary not found" });
+      }
+
+      res.json({ summary: lessonSummary });
+    } catch (error) {
+      console.error("Error fetching lesson summary:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
 
   return httpServer;
 }
