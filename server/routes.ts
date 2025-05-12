@@ -309,6 +309,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // --- Get Enrollment Count for a Course ---
+  app.get(
+    "/api/courses/:id/enrollments/count",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const courseId = parseInt(req.params.id);
+        if (isNaN(courseId)) {
+          return res.status(400).json({ message: "Invalid course ID" });
+        }
+        const count = await storage.getEnrollmentCountByCourse(courseId);
+        res.json({ count });
+      } catch (error) {
+        console.error("Error fetching enrollment count:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
   app.get(
     "/api/users",
     isAuthenticated,
@@ -856,11 +875,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = req.user!.id;
       const userRole = req.user!.role;
 
+      // 2. Get average rating per course in a single DB call
+      const ratings = await storage.prisma.review.groupBy({
+        by: ["courseId"],
+        _avg: {
+          stars: true,
+        },
+      });
+
+      // 3. Create a map of courseId to average rating
+      const ratingMap = new Map();
+      ratings.forEach((r) => {
+        ratingMap.set(r.courseId, parseFloat(r._avg.stars.toFixed(1)));
+      });
+
       if (userRole === "admin") {
         const courses = (await storage.getCourses()).filter(
           (course) => course.status === "published"
         );
-        return res.json(courses);
+
+        const coursesWithRatings = courses.map((course) => ({
+          ...course,
+          rating: ratingMap.get(course.id) || 0,
+        }));
+
+        return res.json(coursesWithRatings);
       }
 
       const accessData = await storage.getAllCourseAccessByUser({
@@ -910,7 +949,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         accessibleCourseIds.has(course.id)
       );
 
-      res.json(accessibleCourses);
+      // 4. Merge ratings with courses
+      const accessibleCoursesWithRatings = accessibleCourses.map((course) => ({
+        ...course,
+        rating: ratingMap.get(course.id) || 0,
+      }));
+
+      res.json(accessibleCoursesWithRatings);
     } catch (error) {
       console.error("Error fetching courses:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -1027,7 +1072,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .status(409) // 409 Conflict status code
             .json({
               message: "A course with this title already exists",
-              code: "DUPLICATE_COURSE_TITLE"
+              code: "DUPLICATE_COURSE_TITLE",
             });
         }
 
@@ -1189,8 +1234,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // storage.getEnrollmentsByUser already includes the necessary course data via Prisma include
       const enrollments = await storage.getEnrollmentsByUser(req.user!.id); // Assert req.user exists
 
+      const ratings = await storage.prisma.review.groupBy({
+        by: ["courseId"],
+        _avg: {
+          stars: true,
+        },
+      });
+
+      const ratingMap = new Map();
+      ratings.forEach((r) => {
+        ratingMap.set(r.courseId, parseFloat(r._avg.stars.toFixed(1)));
+      });
+
+      const enrollmentsWithRatings = enrollments.map((enrollment) => {
+        const course = {
+          ...enrollment.course,
+          rating: ratingMap.get(enrollment.course.id) || 0,
+        };
+
+        return {
+          ...enrollment,
+          course,
+        };
+      });
+
       // Directly return the enrollments fetched by the storage layer
-      res.json(enrollments);
+      res.json(enrollmentsWithRatings);
     } catch (error) {
       console.error("Error fetching enrollments:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -1230,6 +1299,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         userId,
         courseId,
       });
+      const courseDetails = await storage.getCourse(courseId);
 
       // Log the activity
       await storage.createActivityLog({
@@ -1237,7 +1307,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         action: "enrolled",
         resourceType: "course",
         resourceId: courseId,
-        metadata: {}, // Prisma expects JsonNull or an object
+        metadata: { title: courseDetails?.title }, // Prisma expects JsonNull or an object
       });
 
       res.status(201).json(newEnrollment);
@@ -1691,9 +1761,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const isCorrect =
             q &&
             ans.selectedOption.trim().toLowerCase() ===
-            q.options[`option${q.correctAnswer.replace("option", "")}`]
-              .trim()
-              .toLowerCase();
+              q.options[`option${q.correctAnswer.replace("option", "")}`]
+                .trim()
+                .toLowerCase();
 
           if (isCorrect) correct++;
           return {
@@ -1753,12 +1823,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 },
               });
             }
+
+            const moduleDetails = await storage.getModule(
+              assessmentLesson.moduleId
+            );
+
             await storage.createActivityLog({
               userId: req.user!.id,
               action: "completed_assessment",
               resourceType: "lesson",
               resourceId: assessmentLesson.id,
-              metadata: {}, // Prisma expects JsonNull or an object
+              metadata: { title: moduleDetails?.title }, // Prisma expects JsonNull or an object
             });
 
             // Get the module and course
@@ -1829,9 +1904,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   const progressPercentage =
                     totalLessonsInCourse > 0
                       ? Math.round(
-                        (completedLessonsInCourse / totalLessonsInCourse) *
-                        100
-                      )
+                          (completedLessonsInCourse / totalLessonsInCourse) *
+                            100
+                        )
                       : 0; // Avoid division by zero if course has no lessons
 
                   // 5. Update enrollment with correct progress and completion status
@@ -1899,7 +1974,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const questions = await storage.prisma.question.findMany({
           where: { moduleId },
         });
-        res.json(questions);
+        const sanitizedQuestions = questions.map(
+          ({ correctAnswer, ...rest }) => rest
+        );
+        res.json(sanitizedQuestions);
       } catch (error) {
         console.error("Error fetching questions for module:", error);
         res.status(500).json({ message: "Internal server error" });
@@ -2120,13 +2198,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         assessmentId,
       });
 
+      const moduleDetails = await storage.getModule(newAttempt.moduleId);
+
       // Log the activity
       await storage.createActivityLog({
         userId: userId,
         action: "started_assessment",
         resourceType: "assessment",
         resourceId: assessmentId,
-        metadata: {}, // Prisma expects JsonNull or an object
+        metadata: { title: moduleDetails?.title }, // Prisma expects JsonNull or an object
       });
 
       res.status(201).json(newAttempt);
@@ -2784,7 +2864,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           action: "completed_lesson",
           resourceType: "lesson",
           resourceId: lessonId,
-          metadata: {}, // Prisma expects JsonNull or an object
+          metadata: { title: lesson.title }, // Prisma expects JsonNull or an object
         });
 
         // Update course enrollment progress
@@ -2827,8 +2907,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const progressPercentage =
               totalLessonsInCourse > 0
                 ? Math.round(
-                  (completedLessonsInCourse / totalLessonsInCourse) * 100
-                )
+                    (completedLessonsInCourse / totalLessonsInCourse) * 100
+                  )
                 : 0; // Avoid division by zero if course has no lessons
 
             // 5. Update enrollment with correct progress and completion status
@@ -3414,36 +3494,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const certId = req.params.certificateId;
       const cert = await storage.getCertificateByHash(certId);
-      if (!cert) {
+      if (!cert)
         return res.status(404).json({ message: "Certificate not found" });
-      }
-
       const course = await storage.getCourse(cert.courseId);
-      if (!course) {
-        return res.status(404).json({ message: "Course not found" });
-      }
+      if (!course) return res.status(404).json({ message: "Course not found" });
 
       const user = await storage.getUser(cert.userId);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
+      if (!user) return res.status(404).json({ message: "User not found" });
 
       const PDFDocument = (await import("pdfkit")).default;
       const doc = new PDFDocument({ size: "A4", layout: "landscape" });
-
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
         `inline; filename="certificate-${certId}.pdf"`
       );
-
       doc.pipe(res);
+      // Load custom background template
 
-      const certImagePath = path.join(
-        projectRoot,
-        "uploads",
-        "certificate-template.png"
-      );
+      const certImagePath = path.join(projectRoot, "uploads", "temp.png");
       if (fs.existsSync(certImagePath)) {
         doc.image(certImagePath, 0, 0, {
           width: doc.page.width,
@@ -3451,46 +3520,130 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      doc.fontSize(30).fillColor("black").text("Certificate of Completion", {
-        align: "center",
-        valign: "center",
-      });
-      doc.moveDown(2);
+      const centerX = doc.page.width / 2;
+
+      // Issue Date
+      // doc.font("Helvetica").fontSize(12).fillColor("black")
+      //   .text(`${new Date(cert.issueDate).toDateString()}`, 50, 100);
+
+      // Certificate Title
       doc
-        .fontSize(24)
-        .text(`${user.firstName || ""} ${user.lastName || ""}`.trim(), {
-          align: "center",
-        });
-      doc.moveDown(1);
-      doc
-        .fontSize(20)
-        .text(`has successfully completed the course`, { align: "center" });
-      doc.moveDown(1);
-      doc.fontSize(24).text(`${course.title}`, { align: "center" });
-      doc.moveDown(2);
-      doc
-        .fontSize(16)
-        .text(`Issued on: ${cert.issueDate.toLocaleDateString()}`, {
+        .font("Helvetica-Bold")
+        .fontSize(28)
+        .fillColor("black")
+        .text("Certificate of Completion", centerX - 200, 190, {
+          width: 400,
           align: "center",
         });
 
-      // Add certificate ID at bottom-right corner immediately after background
+      // Full Name
+
       doc
+        .font("Helvetica-Bold")
+        .fontSize(22)
+        .fillColor("black")
+
+        .text(`${user.firstName} ${user.lastName}`, centerX - 200, 240, {
+          width: 400,
+          align: "center",
+        });
+
+      // Completion Line
+
+      doc
+        .font("Helvetica")
+        .fontSize(16)
+
+        .text("has successfully completed", centerX - 200, 280, {
+          width: 400,
+          align: "center",
+        });
+
+      // Course Title
+
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(20)
+
+        .text(course.title, centerX - 200, 310, {
+          width: 400,
+          align: "center",
+        });
+
+      // Issue Date
+
+      doc
+        .font("Helvetica")
+        .fontSize(12)
+        .fillColor("black")
+        .text(
+          `on ${new Date(cert.issueDate).toDateString()}`,
+          centerX - 200,
+          340,
+          { width: 400, align: "center" }
+        );
+
+      // Subtitle
+
+      doc
+        .font("Helvetica")
+        .fontSize(12)
+        .fillColor("gray")
+
+        .text("A course offered by Learning Labs", centerX - 200, 380, {
+          width: 400,
+          align: "center",
+        });
+
+      // Signature
+
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(12)
+        .fillColor("black")
+
+        .text("Alten Global Technologies", centerX - 200, 400, {
+          width: 400,
+          align: "center",
+        });
+
+      doc
+        .font("Helvetica")
+        .fontSize(10)
+
+        .text("Private Limited", centerX - 200, 415, {
+          width: 400,
+          align: "center",
+        });
+
+      // Certificate ID
+
+      doc
+        .font("Helvetica")
         .fontSize(10)
         .fillColor("gray")
+
+        .text(`Certificate ID: ${certId}`, centerX - 200, 480, {
+          width: 400,
+          align: "center",
+        });
+
+      // Verification Link
+
+      doc
+        .fillColor("gray")
+        .fontSize(10)
+
         .text(
-          `Certificate ID: ${certId}`,
-          doc.page.width - 300,
-          doc.page.height - 90,
-          {
-            allign: "right",
-            width: "250",
-          }
+          `Verify at: http://localhost:5000/public/certificate/${certId}`,
+          centerX - 200,
+          500
         );
 
       doc.end();
     } catch (error) {
-      console.error("Error generating public certificate:", error);
+      console.error("Error generating certificate:", error);
+
       res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -3704,37 +3857,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       // Get total active users
       const activeUsers = await storage.prisma.user.count({
-        where: { status: "active" }
+        where: { status: "active" },
       });
 
       // Get course completion rate
       const completedEnrollments = await storage.prisma.enrollment.count({
-        where: { progress: 100 }
+        where: { progress: 100 },
       });
       const totalEnrollments = await storage.prisma.enrollment.count();
-      const completionRate = totalEnrollments > 0
-        ? Math.round((completedEnrollments / totalEnrollments) * 100)
-        : 0;
+      const completionRate =
+        totalEnrollments > 0
+          ? Math.round((completedEnrollments / totalEnrollments) * 100)
+          : 0;
 
       // Get average engagement (hours per week)
       const activityLogs = await storage.prisma.activityLog.findMany({
         where: {
           createdAt: {
-            gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
-          }
-        }
+            gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+          },
+        },
       });
-      const avgEngagement = activityLogs.length > 0
-        ? (activityLogs.length / activeUsers / 7 * 2).toFixed(1)
-        : "0.0";
+      const avgEngagement =
+        activityLogs.length > 0
+          ? ((activityLogs.length / activeUsers / 7) * 2).toFixed(1)
+          : "0.0";
 
       // Get certificates issued in last 30 days
       const recentCertificates = await storage.prisma.certificate.count({
         where: {
           issueDate: {
-            gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-          }
-        }
+            gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+          },
+        },
       });
 
       // Get course enrollment data
@@ -3743,30 +3898,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         select: {
           title: true,
           _count: {
-            select: { enrollments: true }
+            select: { enrollments: true },
           },
           enrollments: {
             select: {
-              progress: true
-            }
-          }
+              progress: true,
+            },
+          },
         },
         take: 5,
         orderBy: {
           enrollments: {
-            _count: 'desc'
-          }
-        }
+            _count: "desc",
+          },
+        },
       });
 
-      const courseData = courses.map(course => ({
+      const courseData = courses.map((course) => ({
         name: course.title,
         enrollment: course._count.enrollments,
         completion: Math.round(
           course.enrollments.reduce((acc, curr) => acc + curr.progress, 0) /
-          (course.enrollments.length || 1)
+            (course.enrollments.length || 1)
         ),
-        avgScore: Math.round(65 + Math.random() * 20) // Placeholder - needs assessment data
+        avgScore: Math.round(65 + Math.random() * 20), // Placeholder - needs assessment data
       }));
 
       res.json({
@@ -3774,14 +3929,268 @@ export async function registerRoutes(app: Express): Promise<Server> {
           totalUsers: activeUsers,
           courseCompletion: completionRate,
           avgEngagement: avgEngagement,
-          certificatesIssued: recentCertificates
+          certificatesIssued: recentCertificates,
         },
-        courseData
+        courseData,
       });
     } catch (error) {
       console.error("Error fetching analytics:", error);
       res.status(500).json({ message: "Internal server error" });
     }
   });
+
+  // 1. GET All Reviews for a Course (Publicly Accessible)
+  app.get("/api/courses/:courseId/reviews", async (req, res) => {
+    try {
+      const courseId = parseInt(req.params.courseId);
+      if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid Course ID" });
+      }
+
+      const reviews = await storage.prisma.review.findMany({
+        where: { courseId: courseId },
+        orderBy: { createdAt: "desc" },
+        // Include basic user info (can be simplified further if needed)
+        include: {
+          user: {
+            select: {
+              id: true,
+              firstName: true, // Keep names for display
+              lastName: true,
+              profilePicture: true, // Keep avatar
+            },
+          },
+        },
+      });
+
+      res.json(reviews); // Send the raw review data with nested user
+    } catch (error) {
+      console.error("Error fetching course reviews:", error);
+      res.status(500).json({ message: "Could not fetch reviews" });
+    }
+  });
+
+  // 2. GET Average Rating for a Course (Publicly Accessible)
+  app.get("/api/courses/:courseId/reviews/average", async (req, res) => {
+    try {
+      const courseId = parseInt(req.params.courseId);
+      if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid Course ID" });
+      }
+
+      // Fetch all reviews for the course (simpler than aggregate for understanding)
+      const reviews = await storage.prisma.review.findMany({
+        where: { courseId: courseId },
+        select: { stars: true }, // Only select the stars field
+      });
+
+      const reviewCount = reviews.length;
+      let averageRating = 0;
+
+      if (reviewCount > 0) {
+        const totalStars = reviews.reduce(
+          (sum, review) => sum + review.stars,
+          0
+        );
+        averageRating = parseFloat((totalStars / reviewCount).toFixed(1)); // Calculate and format
+      }
+
+      res.json({
+        averageRating: averageRating,
+        reviewCount: reviewCount,
+      });
+    } catch (error) {
+      console.error("Error fetching average course rating:", error);
+      res.status(500).json({ message: "Could not calculate average rating" });
+    }
+  });
+
+  // 3. PUT (Create or Update) a Review for a Course (Requires Authentication)
+  app.put(
+    "/api/courses/:courseId/reviews",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const courseId = parseInt(req.params.courseId);
+        const userId = req.user!.id; // User ID from authentication
+
+        if (isNaN(courseId)) {
+          return res.status(400).json({ message: "Invalid Course ID" });
+        }
+
+        const { stars, comment } = req.body;
+
+        // Basic Input Validation
+        if (
+          typeof stars !== "number" ||
+          !Number.isInteger(stars) ||
+          stars < 1 ||
+          stars > 5
+        ) {
+          return res.status(400).json({
+            message: "Rating (stars) must be an integer between 1 and 5",
+          });
+        }
+        // Optional: Basic check for comment type if provided
+        if (
+          comment !== undefined &&
+          comment !== null &&
+          typeof comment !== "string"
+        ) {
+          return res.status(400).json({ message: "Comment must be a string" });
+        }
+
+        // Use upsert to create or update
+        const review = await storage.prisma.review.upsert({
+          where: {
+            // Unique identifier for the review
+            userId_courseId: {
+              userId: userId,
+              courseId: courseId,
+            },
+          },
+          update: {
+            // What to update if it exists
+            stars: stars,
+            comment: comment, // Update comment (allows setting to null/empty)
+          },
+          create: {
+            // What to create if it doesn't exist
+            stars: stars,
+            comment: comment,
+            userId: userId,
+            courseId: courseId,
+          },
+        });
+
+        res.status(200).json(review); // Send back the created/updated review data
+      } catch (error) {
+        // Basic check if the error is because the course doesn't exist
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2003"
+        ) {
+          return res.status(404).json({ message: "Course not found." });
+        }
+        console.error("Error creating/updating review:", error);
+        res.status(500).json({ message: "Could not save review" });
+      }
+    }
+  );
+  // 4. GET Single Review by User for a Course (Requires Authentication)
+  // Fetches the specific review left by the currently authenticated user for a given course.
+  app.get(
+    "/api/courses/:courseId/reviews/my-review",
+    isAuthenticated,
+    async (req, res) => {
+      try {
+        const courseId = parseInt(req.params.courseId);
+        const userId = req.user!.id; // Get user ID from authenticated request
+
+        if (isNaN(courseId)) {
+          return res.status(400).json({ message: "Invalid Course ID" });
+        }
+
+        // Use findUnique with the compound unique index
+        const review = await storage.prisma.review.findUnique({
+          where: {
+            userId_courseId: {
+              // Use the unique constraint name from your schema @@unique([userId, courseId], name: "userId_courseId")
+              userId: userId,
+              courseId: courseId,
+            },
+          },
+          // Optional: Include user details if needed, though often not necessary
+          // as the frontend already knows the user.
+          // include: {
+          //   user: { select: { id: true, firstName: true, lastName: true } }
+          // }
+        });
+
+        if (!review) {
+          // It's important to return 404 if the review specifically doesn't exist
+          // This is different from a server error.
+          return res
+            .status(404)
+            .json({ message: "Review not found for this user and course." });
+        }
+
+        // Review found, return it
+        res.status(200).json(review);
+      } catch (error) {
+        console.error("Error fetching user's course review:", error);
+        res
+          .status(500)
+          .json({ message: "Internal server error fetching your review" });
+      }
+    }
+  );
+
+  // app.get("/api/recommendations", async (req, res) => {
+  app.get("/api/recommendations", isAuthenticated, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const userRole = "admin"; //req.user!.role;
+
+      // 2. Get average ratings for all courses
+      const ratings = await storage.prisma.review.groupBy({
+        by: ["courseId"],
+        _avg: { stars: true },
+      });
+
+      const ratingMap = new Map<number, number>();
+      ratings.forEach((r) => {
+        ratingMap.set(r.courseId, parseFloat(r._avg.stars.toFixed(1)));
+      });
+
+      // 3. Get recommended course IDs from Python server
+      let recommendedCourses = [];
+      try {
+        const flaskResponse = await axios.post(
+          "http://localhost:5001/recommend",
+          {
+            role: userRole,
+            user_id: userId,
+          }
+        );
+
+        const recommendedList = flaskResponse.data.recommended_courses;
+        const recommendedIds = recommendedList.map((course) => course.id);
+
+        // console.log("recommendedIds", recommendedIds)
+
+        if (recommendedIds.length) {
+          const courses = await storage.prisma.course.findMany({
+            where: { id: { in: recommendedIds } },
+            select: {
+              id: true,
+              title: true,
+              description: true,
+              thumbnail: true,
+            },
+          });
+
+          recommendedCourses = courses.map((c) => ({
+            ...c,
+            rating: ratingMap.get(c.id) || null,
+          }));
+        }
+      } catch (err) {
+        console.error(
+          "⚠️ Error fetching recommendations from Flask:",
+          err.message
+        );
+      }
+
+      // 4. Return response
+      return res.json({
+        recommendedCourses,
+      });
+    } catch (error) {
+      console.error("❌ Error fetching course:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   return httpServer;
 }

@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import ChatbotWidget from "@/components/ChatbotWidget";
-
 import { MainLayout } from "@/components/layout/main-layout";
 import { useAuth } from "@/context/auth-context";
 import { ModuleAssessment } from "@/components/dashboard/module-assessment";
@@ -121,6 +120,7 @@ type Course = {
 type LessonProgress = { lessonId: number; status: string };
 
 import { useQuery } from "@tanstack/react-query";
+import { CustomAudioPlayer } from "@/components/audio/CustomAudioPlayer";
 
 // AssessmentLessonWrapper: Handles display of assessment result and retake logic
 function AssessmentLessonWrapper({
@@ -210,23 +210,23 @@ function AssessmentLessonWrapper({
   );
 }
 
-function getNextLesson(modules, lessonProgress) {
-  if (!modules?.length) return null;
-
-  const completedLessonIds = new Set(
-    (lessonProgress || []).filter(p => p.status === "completed").map(p => p.lessonId)
-  );
-
+function getNextLesson(modules: Module[], lessonProgress: LessonProgress[]) {
   let firstLesson = null;
   let lastLesson = null;
 
-  const sortedModules = modules
-    .slice()
-    .sort((a, b) => a.position - b.position);
+  if (!modules?.length) return { module: null, lesson: firstLesson };
+
+  const completedLessonIds = new Set(
+    (lessonProgress || [])
+      .filter((p) => p.status === "completed")
+      .map((p) => p.lessonId)
+  );
+
+  const sortedModules = modules.slice().sort((a, b) => a.position - b.position);
 
   for (const module of sortedModules) {
     const sortedLessons = module.lessons
-      .filter(lesson => lesson.position >= 0)
+      .filter((lesson) => lesson.position >= 0)
       .sort((a, b) => a.position - b.position);
 
     if (sortedLessons.length === 0) continue;
@@ -250,7 +250,6 @@ function getNextLesson(modules, lessonProgress) {
 
   return lastLesson; // All completed
 }
-
 
 export default function CourseContent() {
   const [activeAssessmentModuleId, setActiveAssessmentModuleId] = useState<
@@ -294,7 +293,9 @@ export default function CourseContent() {
 
   const fetchNote = async (lessonId: number, userId: number) => {
     try {
-      const res = await fetch(`/api/notes?lessonId=${lessonId}&userId=${userId}`);
+      const res = await fetch(
+        `/api/notes?lessonId=${lessonId}&userId=${userId}`
+      );
       if (!res.ok) throw new Error("Failed to fetch note");
       const data = await res.json();
       setFetchedNoteContent(data.content || "");
@@ -410,13 +411,14 @@ export default function CourseContent() {
   };
 
   const captionUrl = currentLesson?.videoUrl
-    ?.replace('/videos/', '/captions/')
-    ?.replace(/\.(mp4|webm|ogg|mov|avi)$/i, '.vtt');
+    ?.replace("/videos/", "/captions/")
+    ?.replace(/\.(mp4|webm|ogg|mov|avi)$/i, ".vtt");
 
   useEffect(() => {
-    captionUrl && fetch(captionUrl, { method: 'HEAD' })  // HEAD request: lightweight existence check
-      .then(res => setCaptionExists(res.ok))
-      .catch(() => setCaptionExists(false));
+    captionUrl &&
+      fetch(captionUrl, { method: "HEAD" }) // HEAD request: lightweight existence check
+        .then((res) => setCaptionExists(res.ok))
+        .catch(() => setCaptionExists(false));
   }, [captionUrl]);
 
   // Fetch summary when currentLesson changes
@@ -480,11 +482,26 @@ export default function CourseContent() {
                 },
                 {}
               );
+
+              const newModuleId = parseInt(
+                queryParams.get("moduleId") || "0",
+                10
+              );
+              const newLessonId = parseInt(
+                queryParams.get("lessonId") || "0",
+                10
+              );
+
               setLessonProgressMap(progressMap);
-              const {module,lesson} = getNextLesson(data.modules,progressData)
-              console.log("moduleId,lessonId",module,lesson)
-              setCurrentModule(module);
-              setCurrentLesson(lesson);
+              const { module, lesson } = getNextLesson(
+                data.modules,
+                progressData
+              );
+
+              if (!newModuleId && !newLessonId) {
+                setCurrentModule(module);
+                setCurrentLesson(lesson);
+              }
             } else {
               console.error(
                 "Failed to fetch lesson progress:",
@@ -533,7 +550,7 @@ export default function CourseContent() {
     }
   }, [search, course]);
 
-// Fetch comments and note when currentLesson changes
+  // Fetch comments and note when currentLesson changes
   useEffect(() => {
     if (currentLesson?.id) {
       fetchComments(currentLesson.id);
@@ -543,9 +560,9 @@ export default function CourseContent() {
     }
   }, [currentLesson?.id, user?.id]);
 
-// Calculate navigation links
-  const allLessons = (
-    course?.modules.flatMap(m =>
+  // Calculate navigation links
+  const allLessons =
+    course?.modules.flatMap((m) =>
       [...m.lessons]
         .slice()
         .sort((a, b) => {
@@ -553,17 +570,25 @@ export default function CourseContent() {
           if (a.position !== -1 && b.position === -1) return -1;
           return (a.position ?? 0) - (b.position ?? 0);
         })
-        .map(l => ({ ...l, moduleId: m.id }))
-    ) || []
+        .map((l) => ({ ...l, moduleId: m.id }))
+    ) || [];
+  const currentLessonIndex = allLessons.findIndex(
+    (l) => l.moduleId === currentModule?.id && l.id === currentLesson?.id
   );
-  const currentLessonIndex = allLessons.findIndex(l => l.moduleId === currentModule?.id && l.id === currentLesson?.id);
-  const previousLesson = currentLessonIndex > 0 ? allLessons[currentLessonIndex - 1] : null;
-  const nextLesson = currentLessonIndex < allLessons.length - 1 ? allLessons[currentLessonIndex + 1] : null;
+  const previousLesson =
+    currentLessonIndex > 0 ? allLessons[currentLessonIndex - 1] : null;
+  const nextLesson =
+    currentLessonIndex < allLessons.length - 1
+      ? allLessons[currentLessonIndex + 1]
+      : null;
 
   // Calculate completion statistics excluding dummy lesson
   const totalLessons = allLessons.length;
-  const completedLessons = allLessons.filter(l => lessonProgressMap[l.id]).length;
-  const progressPercentage = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0;
+  const completedLessons = allLessons.filter(
+    (l) => lessonProgressMap[l.id]
+  ).length;
+  const progressPercentage =
+    totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0;
 
   const handleMarkComplete = async () => {
     if (!currentLesson || !user) return;
@@ -579,11 +604,13 @@ export default function CourseContent() {
       });
 
       if (!response.ok) {
-        const errorData = await response.text(); 
-        throw new Error(`Failed to update progress: ${response.status} ${response.statusText} - ${errorData}`);
+        const errorData = await response.text();
+        throw new Error(
+          `Failed to update progress: ${response.status} ${response.statusText} - ${errorData}`
+        );
       }
 
-      setLessonProgressMap(prev => ({ ...prev, [currentLesson.id]: true }));
+      setLessonProgressMap((prev) => ({ ...prev, [currentLesson.id]: true }));
 
       toast({
         title: "Lesson marked as complete",
@@ -595,12 +622,14 @@ export default function CourseContent() {
         navigateToLesson(nextLesson.moduleId, nextLesson.id);
       }
     } catch (error) {
-       console.error("Failed to mark lesson complete:", error);
-       toast({
-         title: "Error",
-         description: `Could not update progress: ${error instanceof Error ? error.message : 'Unknown error'}`,
-         variant: "destructive",
-       });
+      console.error("Failed to mark lesson complete:", error);
+      toast({
+        title: "Error",
+        description: `Could not update progress: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+        variant: "destructive",
+      });
     }
   };
 
@@ -630,18 +659,27 @@ export default function CourseContent() {
     }
   };
 
-  const tabsGridColsClass = currentLesson?.videoUrl ? 'grid-cols-4' : 'grid-cols-3';
+  const tabsGridColsClass = currentLesson?.videoUrl
+    ? "grid-cols-4"
+    : "grid-cols-3";
 
   const getLessonIcon = (lesson: Lesson) => {
     let iconColor = "text-slate-400";
 
-    const isCompleted = lesson.id ? lessonProgressMap[lesson.id] ?? false : false;
+    const isCompleted = lesson.id
+      ? lessonProgressMap[lesson.id] ?? false
+      : false;
     iconColor = isCompleted ? "text-green-500" : "text-slate-400";
 
     const iconClasses = `mr-3 h-5 w-5 ${iconColor}`;
 
     if (lesson.videoUrl) return <PlayCircle className={iconClasses} />;
     return <FileText className={iconClasses} />;
+  };
+
+  const isAudioFile = (url) => {
+    if (!url) return false;
+    return /\.(mp3|wav|ogg|aac|flac)$/i.test(url);
   };
 
   if (isLoading) {
@@ -698,15 +736,16 @@ export default function CourseContent() {
 
   return (
     <MainLayout>
-      <div className="bg-white dark:bg-slate-900 shadow">
+      <div className="bg-white dark:bg-slate-900 shadow top-0 z-50">
         <div className="px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 md:gap-4 text-sm flex-shrink-0">
+          <div className="flex items-center gap-1 md:gap-4 text-sm flex-shrink-0">
             <Button
               variant="ghost"
               size="icon"
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="lg:hidden"
+              // className="lg:hidden"
               aria-label={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
+              title="Toggle Course details"
             >
               {isSidebarOpen ? (
                 <PanelLeftClose className="h-5 w-5" />
@@ -733,7 +772,7 @@ export default function CourseContent() {
               "lg:col-span-1 transition-transform duration-300 ease-in-out lg:translate-x-0",
               isSidebarOpen
                 ? "translate-x-0"
-                : "-translate-x-full absolute lg:static"
+                : "-translate-x-full absolute lg:static lg:hidden"
             )}
           >
             <div className="lg:sticky lg:top-[70px] space-y-6 max-h-[calc(100vh-90px)] overflow-y-auto pr-2 custom-scrollbar">
@@ -770,7 +809,7 @@ export default function CourseContent() {
                         value={`module-${module.id}`}
                         className="border-b dark:border-slate-700 last:border-b-0"
                       >
-                        <AccordionTrigger className="px-4 py-3 text-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 [&[data-state=open]]:bg-slate-100 dark:[&[data-state=open]]:bg-slate-800 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none rounded-t-md">
+                        <AccordionTrigger className="px-4 py-3 text-sm hover:bg-slate-50 dark:hover:bg-slate-800/50 [&[data-state=open]]:bg-slate-100 dark:[&[data-state=open]]:bg-slate-800 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none">
                           <div className="text-left flex-grow mr-2">
                             <div className="font-medium leading-snug">
                               {module.title}
@@ -864,44 +903,12 @@ export default function CourseContent() {
             }`}
           >
             <Card>
-              <CardHeader className="pb-4">
-                <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+              <CardHeader className="py-2">
+                <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-1">
                   <div className="flex-grow">
-                    <div className="text-sm font-medium text-blue-600 dark:text-blue-400 mb-1">
-                      {currentModule.title}
-                    </div>
                     <CardTitle className="text-xl lg:text-2xl">
                       {currentLesson.title}
                     </CardTitle>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0 mt-2 md:mt-0">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        navigateToLesson(
-                          previousLesson?.moduleId,
-                          previousLesson?.id
-                        )
-                      }
-                      disabled={!previousLesson}
-                      aria-label="Previous lesson"
-                    >
-                      <ChevronLeft className="h-4 w-4 sm:mr-1" />
-                      <span className="hidden sm:inline">Previous</span>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        navigateToLesson(nextLesson?.moduleId, nextLesson?.id)
-                      }
-                      disabled={!nextLesson}
-                      aria-label="Next lesson"
-                    >
-                      <span className="hidden sm:inline">Next</span>
-                      <ChevronRight className="h-4 w-4 sm:ml-1" />
-                    </Button>
                   </div>
                 </div>
               </CardHeader>
@@ -913,24 +920,45 @@ export default function CourseContent() {
                     userId={user?.id}
                   />
                 ) : currentLesson.videoUrl ? (
-                  <div className="aspect-video bg-black rounded-t-none">
-                    <video
-                      key={currentLesson.videoUrl}
-                      src={currentLesson.videoUrl}
-                      className="w-full h-full"
-                      controls
-                    >
-                      {captionExists && <track
-                        src={currentLesson.videoUrl.replace('/videos/', '/captions/').replace(/\.(mp4|webm|ogg|mov|avi)$/i, '.vtt')}
-                        kind="captions"
-                        srcLang="en"  // Using generated/default value
-                        label="English"   // Using generated/default value
-                        default
-                        // Consider removing 'default' unless you accept the risk
-                        // of it trying to load a non-existent file by default.
-                        />}
-                    </video>
-                  </div>
+                  <>
+                    {isAudioFile(currentLesson.videoUrl) ? (
+                      // Audio Player
+                      <div className="bg-gray-100 p-4 dark:bg-gray-900">
+                        <CustomAudioPlayer
+                          src={currentLesson.videoUrl}
+                          captionSrc={
+                            captionExists
+                              ? currentLesson.videoUrl
+                                  .replace("/videos/", "/captions/")
+                                  .replace(/\.(mp3|wav|ogg|aac|flac)$/i, ".vtt")
+                              : null
+                          }
+                        />
+                      </div>
+                    ) : (
+                      // Video Player
+                      <div className="aspect-video bg-black rounded-t-none">
+                        <video
+                          key={currentLesson.videoUrl}
+                          src={currentLesson.videoUrl}
+                          className="w-full h-full"
+                          controls
+                        >
+                          {captionExists && (
+                            <track
+                              src={currentLesson.videoUrl
+                                .replace("/videos/", "/captions/")
+                                .replace(/\.(mp4|webm|ogg|mov|avi)$/i, ".vtt")}
+                              kind="captions"
+                              srcLang="en"
+                              label="English"
+                              default
+                            />
+                          )}
+                        </video>
+                      </div>
+                    )}
+                  </>
                 ) : currentLesson.content ? (
                   <div className="p-6 prose dark:prose-invert max-w-none prose-sm sm:prose-base">
                     <p>{currentLesson.content}</p>
@@ -944,10 +972,27 @@ export default function CourseContent() {
 
                 {(currentLesson.videoUrl || currentLesson.content) && (
                   <div className="p-4 sm:p-6 border-t dark:border-slate-700">
-                    <Tabs defaultValue="overview" className="w-full">
-                      <TabsList className={`mb-4 grid ${tabsGridColsClass} w-full sm:w-auto`}>
-                        {currentLesson.videoUrl && <TabsTrigger value="summary">Summary</TabsTrigger>}
+                    <Tabs defaultValue="resources" className="w-full">
+                      <TabsList
+                        className={`mb-4 grid ${tabsGridColsClass} w-full sm:w-auto`}
+                      >
                         <TabsTrigger value="resources">Resources</TabsTrigger>
+                        {/* {currentLesson.videoUrl && (
+                          <TabsTrigger value="summary">Summary</TabsTrigger>
+                        )} */}
+                        {currentLesson.videoUrl && (<TabsTrigger
+                          value="summary"
+                          className="flex items-center gap-1.5"
+                        >
+                          Summary
+                          <span
+                            className="px-1 py-0.1 text-[10px] font-bold text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded shadow"
+                            style={{ fontFamily: "monospace" }}
+                          >
+                            AI
+                          </span>
+                        </TabsTrigger>)}
+
                         <TabsTrigger value="notes">My Notes</TabsTrigger>
                         <TabsTrigger value="discussion">Discussion</TabsTrigger>
                       </TabsList>
@@ -957,7 +1002,9 @@ export default function CourseContent() {
                             {summaryLoading ? (
                               <div className="flex items-center justify-center h-full">
                                 <Loader2 className="animate-spin h-4 w-4 text-primary" />
-                                <span className="ml-2 text-slate-500 dark:text-slate-400">Loading summary...</span>
+                                <span className="ml-2 text-slate-500 dark:text-slate-400">
+                                  Loading summary...
+                                </span>
                               </div>
                             ) : lessonSummary ? (
                               <p>{lessonSummary}</p>
@@ -1004,7 +1051,11 @@ export default function CourseContent() {
                             ></textarea>
                           </div>
                           <Button size="sm" onClick={handleSaveNote}>
-                            <Loader2 className={cn("mr-2 h-4 w-4 animate-spin", { hidden: !isSavingNote })} />
+                            <Loader2
+                              className={cn("mr-2 h-4 w-4 animate-spin", {
+                                hidden: !isSavingNote,
+                              })}
+                            />
                             Save Notes
                           </Button>
                           {savedNote && (
@@ -1086,23 +1137,33 @@ export default function CourseContent() {
                                     </Button>
                                   </div>
                                 )}
-                                {comment.replies && comment.replies.length > 0 && (
-                                  <div className="mt-3 space-y-2 pl-4 border-l border-slate-200 dark:border-slate-700">
-                                    {comment.replies.map((reply: any) => (
-                                      <div key={reply.id} className="border rounded p-2 bg-slate-100 dark:bg-slate-800/50">
-                                        <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
-                                          <span>
-                                            {reply.user?.firstName || reply.user?.username || "User"}
-                                          </span>
-                                          <span>
-                                            {new Date(reply.createdAt).toLocaleString()}
-                                          </span>
+                                {comment.replies &&
+                                  comment.replies.length > 0 && (
+                                    <div className="mt-3 space-y-2 pl-4 border-l border-slate-200 dark:border-slate-700">
+                                      {comment.replies.map((reply: any) => (
+                                        <div
+                                          key={reply.id}
+                                          className="border rounded p-2 bg-slate-100 dark:bg-slate-800/50"
+                                        >
+                                          <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
+                                            <span>
+                                              {reply.user?.firstName ||
+                                                reply.user?.username ||
+                                                "User"}
+                                            </span>
+                                            <span>
+                                              {new Date(
+                                                reply.createdAt
+                                              ).toLocaleString()}
+                                            </span>
+                                          </div>
+                                          <div className="text-sm">
+                                            {reply.comment}
+                                          </div>
                                         </div>
-                                        <div className="text-sm">{reply.comment}</div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
+                                      ))}
+                                    </div>
+                                  )}
                               </div>
                             ))}
                           </div>
@@ -1116,24 +1177,42 @@ export default function CourseContent() {
                 )}
               </CardContent>
               <CardFooter className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 border-t dark:border-slate-700 gap-3">
-                <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                  <HelpCircle className="h-4 w-4 flex-shrink-0" />
-                  <span>
-                    Need help?{" "}
-                    <a
-                      href="#"
-                      className="text-blue-600 dark:text-blue-400 hover:underline"
-                    >
-                      Contact instructor
-                    </a>
-                  </span>
+                <div className="flex items-center gap-2 flex-shrink-0 mt-2 md:mt-0">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      navigateToLesson(
+                        previousLesson?.moduleId,
+                        previousLesson?.id
+                      )
+                    }
+                    disabled={!previousLesson}
+                    aria-label="Previous lesson"
+                  >
+                    <ChevronLeft className="h-4 w-4 sm:mr-1" />
+                    <span className="hidden sm:inline">Previous</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      navigateToLesson(nextLesson?.moduleId, nextLesson?.id)
+                    }
+                    disabled={!nextLesson}
+                    aria-label="Next lesson"
+                  >
+                    <span className="hidden sm:inline">Next</span>
+                    <ChevronRight className="h-4 w-4 sm:ml-1" />
+                  </Button>
                 </div>
                 <div>
-                  {currentLesson.type === "assessment" ? null : isLessonCompleted ? (
-                      <div className="flex items-center gap-2 text-green-600 dark:text-green-400 font-medium text-sm p-2 rounded-md bg-green-50 dark:bg-green-900/30">
-                        <Check className="h-5 w-5"/>
-                        <span>Completed</span>
-                      </div>
+                  {currentLesson.type ===
+                  "assessment" ? null : isLessonCompleted ? (
+                    <div className="flex items-center gap-2 text-green-600 dark:text-green-400 font-medium text-sm p-2 rounded-md bg-green-50 dark:bg-green-900/30">
+                      <Check className="h-5 w-5" />
+                      <span>Completed</span>
+                    </div>
                   ) : (
                     <Button
                       variant="default"

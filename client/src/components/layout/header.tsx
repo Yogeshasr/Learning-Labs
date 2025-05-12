@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Search, Bell, Sun, Moon, Menu } from "lucide-react";
+import { Search, Bell, Sun, Moon, Menu, HelpCircle } from "lucide-react";
 import LOGO from "../../../favicon.png";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
@@ -34,7 +34,7 @@ export function Header({ onMobileMenuToggle }: HeaderProps) {
   const { user, logoutMutation } = useAuth();
   const { theme, setTheme } = useTheme();
   const queryClient = useQueryClient();
-
+  const role = user?.role || "employee";
   const { data: notifications = [] } = useQuery<Notification[]>({
     queryKey: ["notifications"],
     queryFn: async () => {
@@ -102,7 +102,24 @@ export function Header({ onMobileMenuToggle }: HeaderProps) {
       return message; // fallback if parsing fails
     }
   };
+  // const openUserGuide = () => {
+  //   const userGuideUrl = import.meta.env.VITE_USER_GUIDE_URL;
+  //   window.open(userGuideUrl, "_blank");
+  // };
 
+  const openUserGuide = () => {
+    let userGuideUrl = "";
+
+    if (role === "admin") {
+      userGuideUrl = "../../../../../Admin_User_Manual.pdf";
+    } else if (role === "contributor") {
+      userGuideUrl = "../../../../../Contributor_User_Manual.pdf";
+    } else {
+      userGuideUrl = "../../../../../Employee_User_Manual.pdf";
+    }
+
+    window.open(userGuideUrl, "_blank");
+  };
 
   return (
     <header className="sticky top-0 z-30 w-full bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 shadow-sm">
@@ -137,14 +154,32 @@ export function Header({ onMobileMenuToggle }: HeaderProps) {
               width="130"
             />
 
-            <span className="hidden sm:inline font-bold text-xl text-slate-900 dark:text-white">
+            {/* <span className="hidden sm:inline text-2xl font-semibold bg-gradient-to-r from-blue-700 via-purple-700 to-black bg-clip-text text-transparent font-[Roboto] tracking-wide dark:from-blue-600 dark:via-purple-600 dark:to-blue-800 dark:text-transparent mt-1">
               Learning Labs
-            </span>
+            </span> */}
 
+            <img
+              src="../../../black.png"
+              className="hidden md:block mt-1 mr-2 ml-[-5px] dark:hidden"
+              title="Learning Labs"
+              alt="Learning Labs"
+              width="85"
+            />
+            <img
+              src="../../../white.png"
+              className="hidden md:block mt-1 mr-2 ml-[-5px] light:hidden"
+              title="Learning Labs"
+              alt="Learning Labs"
+              width="85"
+            />
+
+            {/* <span className="hidden sm:inline text-2xl font-semibold bg-gradient-to-r from-blue-700 via-purple-700 to-black bg-clip-text text-transparent font-[Raleway] tracking-wide dark:from-blue-600 dark:via-purple-600 dark:to-blue-800 dark:text-transparent">
+              Learning Labs
+            </span> */}
           </Link>
         </div>
 
-        <div className="ml-auto flex items-center space-x-4">
+        <div className="ml-auto flex items-center gap-3">
           {/* Dark mode toggle button */}
           <Button
             variant="ghost"
@@ -196,10 +231,11 @@ export function Header({ onMobileMenuToggle }: HeaderProps) {
                   notifications.map((notification) => (
                     <div
                       key={notification.id}
-                      className={`py-2 px-4 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer ${!notification.isRead
-                        ? "bg-slate-50 dark:bg-slate-900"
-                        : ""
-                        }`}
+                      className={`py-2 px-4 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer ${
+                        !notification.isRead
+                          ? "bg-slate-50 dark:bg-slate-900"
+                          : ""
+                      }`}
                       onClick={() => markAsReadMutation.mutate(notification.id)}
                     >
                       <div className="font-medium">{notification.title}</div>
@@ -215,6 +251,18 @@ export function Header({ onMobileMenuToggle }: HeaderProps) {
               </div>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* Help button */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={openUserGuide}
+            title="User Guide"
+            className="text-slate-600 hover:bg-slate-100 hover:text-blue-600 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-blue-400"
+          >
+            <HelpCircle className="h-5 w-5" />
+            <span className="sr-only">Help</span>
+          </Button>
 
           {/* User dropdown */}
           <DropdownMenu>

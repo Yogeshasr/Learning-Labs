@@ -17,10 +17,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Loader2, Mail, Lock, Eye, EyeOff, Mic } from "lucide-react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
-import { GoogleOAuthProvider, GoogleLogin } from "@react-oauth/google";
+// import { GoogleOAuthProvider, GoogleLogin } from "@react-oauth/google";
 import { jwtDecode } from "jwt-decode";
 import { useMsal } from "@azure/msal-react";
 import { useErrorHandler } from "@/hooks/use-error-handler";
+
+import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
+
+
 
 const clientId =
   "986989868035-bbbpdr11ndnft9igim3p4oj5ha9mc658.apps.googleusercontent.com";
@@ -64,7 +68,6 @@ export function LoginForm() {
       // handleError(error);
     }
   };
-
 
   const handleMicrosoftLogin = async () => {
     try {
@@ -114,18 +117,73 @@ export function LoginForm() {
     }
   };
 
+  // const handleGoogleLoginSuccess = async (response) => {
+  //   try {
+  //     const token = response.credential;
+  //     const user = jwtDecode(token); // Decode the JWT token
+
+  //     const payload = {
+  //       email: user.email,
+  //       username: user.name,
+  //       password: "",
+  //       firstName: user.given_name, // First name from Google profile
+  //       lastName: user.family_name, // Last name from Google profile
+  //       profilePicture: user.picture || null, // Optional profile picture
+  //     };
+
+  //     const apiResponse = await fetch("/api/auth/google", {
+  //       method: "POST",
+  //       headers: { "Content-Type": "application/json" },
+  //       body: JSON.stringify(payload),
+  //     });
+
+  //     const data = await apiResponse.json();
+
+  //     if (apiResponse.ok && data.success) {
+  //       // If the response is successful, show success toast
+  //       toast({
+  //         title:
+  //           "Sign up successful! You will receive an email after approval from the admin.",
+  //         description: "Please check your email",
+  //       });
+  //       // Redirect to home or login page after successful sign-up
+  //       // window.location.href = '/';
+  //     } else {
+  //       // If the response is not successful, show the error message
+  //       toast({
+  //         title: "Already Registered",
+  //         description: data.message, // Error message from the server
+  //       });
+  //     }
+  //   } catch (error) {
+  //     console.error("Google login error:", error);
+  //     toast({
+  //       title: "Error",
+  //       description: "Something went wrong. Please try again!",
+  //     });
+  //   }
+  // };
+
   const handleGoogleLoginSuccess = async (response) => {
     try {
-      const token = response.credential;
-      const user = jwtDecode(token); // Decode the JWT token
+      const accessToken = response.access_token;
+
+      // Fetch user info using the access token
+      const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      const user = await res.json();
 
       const payload = {
         email: user.email,
         username: user.name,
         password: "",
-        firstName: user.given_name, // First name from Google profile
-        lastName: user.family_name, // Last name from Google profile
-        profilePicture: user.picture || null, // Optional profile picture
+        firstName: user.given_name,
+        lastName: user.family_name,
+        profilePicture: user.picture || null,
       };
 
       const apiResponse = await fetch("/api/auth/google", {
@@ -137,19 +195,15 @@ export function LoginForm() {
       const data = await apiResponse.json();
 
       if (apiResponse.ok && data.success) {
-        // If the response is successful, show success toast
         toast({
           title:
             "Sign up successful! You will receive an email after approval from the admin.",
           description: "Please check your email",
         });
-        // Redirect to home or login page after successful sign-up
-        // window.location.href = '/';
       } else {
-        // If the response is not successful, show the error message
         toast({
           title: "Already Registered",
-          description: data.message, // Error message from the server
+          description: data.message,
         });
       }
     } catch (error) {
@@ -167,6 +221,33 @@ export function LoginForm() {
       description: "Please check your email",
     });
   };
+
+  function CustomGoogleButton() {
+    const login = useGoogleLogin({
+      onSuccess: tokenResponse => handleGoogleLoginSuccess(tokenResponse),
+      onError: () => handleGoogleLoginFailure(),
+    });
+
+    return (
+      <button
+        type="button"
+        onClick={() => login()}
+        className="relative w-full mt-3 mb-3 flex items-center justify-center border border-gray-300 bg-white text-[14px] font-normal font-sans text-black py-2 px-4 rounded-md shadow-sm
+                   hover:bg-blue-50
+                   dark:bg-[#0f172a] dark:text-white dark:border-gray-600 dark:hover:bg-[#1e293b]"
+      >
+        <span className="absolute left-4 flex items-center">
+          <svg className="w-5 h-5" viewBox="0 0 533.5 544.3" xmlns="http://www.w3.org/2000/svg">
+            <path fill="#4285F4" d="M533.5 278.4c0-17.4-1.4-34.1-4.1-50.3H272.1v95.2h146.9c-6.3 34.1-25.1 62.9-53.5 82.3v68h86.6c50.7-46.7 81.4-115.6 81.4-195.2z" />
+            <path fill="#34A853" d="M272.1 544.3c72.6 0 133.6-24 178.2-65.2l-86.6-68c-24 16.2-54.6 25.6-91.6 25.6-70.5 0-130.2-47.6-151.6-111.4H32.5v69.9c44.8 88.6 137.4 149.1 239.6 149.1z" />
+            <path fill="#FBBC05" d="M120.5 325.3c-10.8-32.1-10.8-66.6 0-98.7V156.7H32.5c-36.4 70.3-36.4 153.7 0 224l88-55.4z" />
+            <path fill="#EA4335" d="M272.1 107.7c39.4-.6 77 13.5 106 39.2l79.2-79.2C407.5 24.6 344.8 0 272.1 0 169.9 0 77.3 60.5 32.5 149.1l88 55.4c21.5-63.8 81.1-111.4 151.6-111.4z" />
+          </svg>
+        </span>
+        <span className="ml-6">Sign in with Google</span>
+      </button>
+    );
+  }
 
   return (
     <Form {...form}>
@@ -287,7 +368,7 @@ export function LoginForm() {
             <div className="w-full border-t border-gray-300 dark:border-gray-700"></div>
           </div>
           <div className="relative flex justify-center text-sm">
-            <span className="px-2 bg-white dark:bg-slate-900 text-gray-500 dark:text-gray-400">
+            <span className="px-2 bg-white dark:bg-background text-gray-500 dark:text-gray-400">
               Or
             </span>
           </div>
@@ -296,7 +377,9 @@ export function LoginForm() {
       <Button
         type="button"
         onClick={handleMicrosoftLogin}
-        className="relative w-full mt-3 mb-3 flex items-center justify-center border border-gray-300 bg-white hover:bg-blue-50 text-[14px] font-normal text-black-100 font-sans dark:text-black py-2 px-4 rounded-md shadow-sm"
+        className="relative w-full mt-3 mb-3 flex items-center justify-center border border-gray-300 bg-white text-[14px] font-normal font-sans text-black py-2 px-4 rounded-md shadow-sm 
+             hover:bg-blue-50 
+             dark:bg-[#0f172a] dark:text-white dark:border-gray-600 dark:hover:bg-[#1e293b]"
       >
         <span className="absolute left-4 flex items-center">
           <svg
@@ -310,14 +393,19 @@ export function LoginForm() {
             <rect x="12" y="12" width="10" height="10" fill="#FFB900" />
           </svg>
         </span>
-        <span className="ml-6">Sign in with Microsoft</span>
+        <span className="ml-6 dark:text-white">Sign in with Microsoft</span>
       </Button>
 
-      <GoogleOAuthProvider clientId={clientId}>
+
+      {/* <GoogleOAuthProvider clientId={clientId}>
         <GoogleLogin
           onSuccess={handleGoogleLoginSuccess}
           onError={handleGoogleLoginFailure}
         />
+      </GoogleOAuthProvider> */}
+
+      <GoogleOAuthProvider clientId={clientId}>
+        <CustomGoogleButton />
       </GoogleOAuthProvider>
 
 

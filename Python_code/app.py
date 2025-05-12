@@ -11,11 +11,49 @@ from llm_handler import chat
 from image_generation import generate_course_image
 from video_caption_vtt import generate_vtt_from_video
 from pathlib import Path
+from recommender_system import get_recommendations
 
 app = Flask(__name__)
 CORS(app)
 load_dotenv()
 
+@app.route("/api/course-summaries/<int:course_id>", methods=["GET"])
+def get_course_summaries(course_id):
+    try:
+        # Connect to DB to get module IDs for this course
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        cursor = conn.cursor()
+        
+        # Get all module IDs for the course
+        cursor.execute("SELECT id FROM modules WHERE course_id = %s ORDER BY position", (course_id,))
+        module_ids = [row[0] for row in cursor.fetchall()]
+        
+        summaries = []
+        for module_id in module_ids:
+            try:
+                with open(f"module_summaries/module{module_id}_summary.txt", "r", encoding="utf-8") as f:
+                    summary = f.read().strip()
+                    if summary:
+                        summaries.append(summary
+                        )
+            except FileNotFoundError:
+                print(f"⚠️ No summary found for module {module_id}")
+                continue
+                
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "summaries": summaries
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting summaries: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 @app.route("/generate_image", methods=["POST"])
 def generate_image_endpoint():
@@ -196,6 +234,64 @@ def insert_questions_api():
 
     except Exception as e:
         print(f"🔥 Error: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/recommend', methods=['POST'])
+def recommend():
+    try:
+        data = request.get_json()
+        role = data.get('role')
+        user_id = data.get('user_id')
+
+        if not user_id:
+            return jsonify({'error': 'user_id is required'}), 400
+
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        cursor = conn.cursor()
+
+        # 🔹 Step 1: Fetch accessible courses (with or without user_id)
+        if role=="admin":
+            cursor.execute("""
+                SELECT id, title, description
+                FROM courses
+            """)
+        else:
+            cursor.execute("""
+                SELECT c.id, c.title, c.description
+                FROM course_access ca
+                JOIN courses c ON ca.course_id = c.id
+                WHERE ca.user_id = %s
+            """, (user_id,))
+
+
+        accessible_courses = [{'id': cid, 'title': title, 'description': desc} for cid, title, desc in cursor.fetchall()]
+
+        # 🔹 Step 2: Fetch enrolled course titles
+        cursor.execute("""
+            SELECT c.title
+            FROM enrollments e
+            JOIN courses c ON e.course_id = c.id
+            WHERE e.user_id = %s
+        """, (user_id,))
+        enrolled_titles = [row[0] for row in cursor.fetchall()]
+
+        cursor.close()
+        conn.close()
+
+        if not accessible_courses or not enrolled_titles:
+            return jsonify({'recommended_courses': []})
+
+        # print("accessible",accessible_courses)
+        # print("enrolled_titles",enrolled_titles)
+
+        recommendations = get_recommendations(accessible_courses, enrolled_titles)
+        return jsonify({'recommended_courses': recommendations})
+
+    except Exception as e:
+        print(f"❌ Error getting recommendations: {e}")
         return jsonify({
             "success": False,
             "error": str(e)

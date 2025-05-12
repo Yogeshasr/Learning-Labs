@@ -31,7 +31,7 @@ export function CourseCard({
     // Explicitly prevent default and stop propagation
     e.preventDefault(); 
     e.stopPropagation(); 
-    const targetUrl = isInProgress ? `/course-content?id=${id}&moduleId=1&lessonId=3` : `/course-detail/${id}`;
+    const targetUrl = isInProgress ? `/course-content?id=${id}` : `/course-detail/${id}`;
     navigate(targetUrl);
     // Returning false is generally not needed with preventDefault/stopPropagation
   };
@@ -47,9 +47,9 @@ export function CourseCard({
             (e.target as HTMLImageElement).src = defaultThumbnail;
           }}
         />
-        {rating && (
+        {(rating || rating==0) && (
           <div className="absolute top-2 right-2 bg-accent text-accent-foreground dark:text-white text-xs font-medium px-2 py-1 rounded">
-          {rating} <span className="text-yellow-400">★</span>
+          {rating==0?"-":parseFloat(rating).toFixed(1)} <span className="text-yellow-400">★</span>
         </div>
         )}
       </div>
