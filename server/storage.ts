@@ -15,11 +15,13 @@ import type {
   ActivityLog,
   Certificate,
   GroupCourse,
-  Note
+  Note,
 } from ".prisma/client"; // Import types from the generated client
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import pg from "pg"; // Import pg for pool
+import dotenv from "dotenv";
+dotenv.config();
 // I/ Defingnsoe prol
 
 // Define Insert types based on Prisma models (adjust as needed, Prisma doesn't auto-generate these like Drizzle-Zod)
@@ -54,10 +56,7 @@ type InsertActivityLog = Omit<ActivityLog, "id" | "createdAt" | "metadata"> & {
 type InsertCertificate = Omit<Certificate, "id" | "issueDate">;
 // --- Note Methods ---
 // Define InsertNote type
-type InsertNote = Omit<
-  Note,
-  "id" | "createdAt" | "updatedAt"
->;
+type InsertNote = Omit<Note, "id" | "createdAt" | "updatedAt">;
 // Initialize Prisma client
 const prisma = new PrismaClient();
 
@@ -243,7 +242,10 @@ export interface IStorage {
 
   // Note related methods
   saveNote(note: InsertNote): Promise<Note>;
-  getNoteByLessonAndUser(lessonId: number, userId: number): Promise<Note | null>;
+  getNoteByLessonAndUser(
+    lessonId: number,
+    userId: number
+  ): Promise<Note | null>;
 }
 
 // Resource insert type
@@ -525,7 +527,7 @@ export class PrismaStorage implements IStorage {
       where: {
         title: {
           equals: title,
-          mode: 'insensitive', // Case-insensitive search
+          mode: "insensitive", // Case-insensitive search
         },
       },
     });
@@ -557,7 +559,9 @@ export class PrismaStorage implements IStorage {
       });
 
       if (relatedAccess) {
-        console.warn(`Course ID ${id} cannot be deleted: related course_access entries exist.`);
+        console.warn(
+          `Course ID ${id} cannot be deleted: related course_access entries exist.`
+        );
         return false; // Block deletion
       }
 
@@ -568,7 +572,6 @@ export class PrismaStorage implements IStorage {
       return false;
     }
   }
-
 
   // --- Module Methods ---
   async getModule(id: number): Promise<Module | null> {
@@ -600,10 +603,16 @@ export class PrismaStorage implements IStorage {
       return createdModule;
     });
   }
-  async updateModule(id: number, moduleData: Partial<Module>): Promise<Module | null> {
+  async updateModule(
+    id: number,
+    moduleData: Partial<Module>
+  ): Promise<Module | null> {
     try {
       const { id: moduleId, ...updateData } = moduleData; // Exclude id
-      return await this.prisma.module.update({ where: { id }, data: updateData });
+      return await this.prisma.module.update({
+        where: { id },
+        data: updateData,
+      });
     } catch (error) {
       return null;
     }
@@ -628,7 +637,7 @@ export class PrismaStorage implements IStorage {
         moduleId,
         // NOT: { type: "assessment" }
       },
-      orderBy: { position: "asc" }
+      orderBy: { position: "asc" },
     });
   }
 
@@ -636,12 +645,14 @@ export class PrismaStorage implements IStorage {
   async getAllLessonsByModule(moduleId: number): Promise<Lesson[]> {
     const lessons = await this.prisma.lesson.findMany({
       where: { moduleId },
-      orderBy: { position: "asc" }
+      orderBy: { position: "asc" },
     });
     // Move assessment lesson to the end
-    const normalLessons = lessons.filter(l => l.type !== "assessment");
-    const assessmentLesson = lessons.find(l => l.type === "assessment");
-    return assessmentLesson ? [...normalLessons, assessmentLesson] : normalLessons;
+    const normalLessons = lessons.filter((l) => l.type !== "assessment");
+    const assessmentLesson = lessons.find((l) => l.type === "assessment");
+    return assessmentLesson
+      ? [...normalLessons, assessmentLesson]
+      : normalLessons;
   }
   async createLesson(lesson: InsertLesson): Promise<Lesson> {
     return this.prisma.lesson.create({ data: lesson });
@@ -776,7 +787,7 @@ export class PrismaStorage implements IStorage {
 
       if (courseCount > 0) {
         // Category is still linked to one or more courses, don't allow deletion
-        throw new Error('Category is linked to existing courses.');
+        throw new Error("Category is linked to existing courses.");
       }
 
       // No linked courses, safe to delete
@@ -787,7 +798,6 @@ export class PrismaStorage implements IStorage {
       return false;
     }
   }
-
 
   // --- Assessment Methods ---
   async getAssessment(id: number): Promise<Assessment | null> {
@@ -1185,19 +1195,19 @@ export class PrismaStorage implements IStorage {
       where: isAdmin
         ? undefined
         : {
-          OR: [
-            { userId: user.id },
-            {
-              group: {
-                members: {
-                  some: {
-                    userId: user.id,
+            OR: [
+              { userId: user.id },
+              {
+                group: {
+                  members: {
+                    some: {
+                      userId: user.id,
+                    },
                   },
                 },
               },
-            },
-          ],
-        },
+            ],
+          },
       include: {
         course: true,
         user: {
