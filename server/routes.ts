@@ -39,9 +39,9 @@ const projectRoot = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   ".."
 );
-const videoUploadDir = path.join(projectRoot, "uploads", "videos");
-const imageUploadDir = path.join(projectRoot, "uploads", "course-images");
-const resourceUploadDir = path.join(projectRoot, "uploads", "resources");
+const videoUploadDir = path.join("/tmp", "uploads", "videos");
+const imageUploadDir = path.join("/tmp", "uploads", "course-images");
+const resourceUploadDir = path.join("/tmp", "uploads", "resources");
 
 if (!fs.existsSync(videoUploadDir)) {
   fs.mkdirSync(videoUploadDir, { recursive: true });
@@ -166,7 +166,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Profile routes
-  const upload = multer({ dest: "uploads/" }); // You can customize destination
+  const upload = multer({ dest: "/tmp/uploads/" }); // You can customize destination
 
   app.put(
     "/api/profile",
@@ -978,7 +978,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/course-images/:courseId/:courseName", async (req, res) => {
     const { courseId, courseName } = req.params;
-    const imageDir = path.join("uploads", "course-images");
+    const imageDir = path.join("/tmp", "uploads", "course-images");
 
     try {
       // Read all files in the directory
@@ -992,7 +992,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Map to full relative paths (or URLs if serving statically)
       const imagePaths = matchingFiles.map((file) =>
-        path.join("uploads", "course-images", file).replace(/\\/g, "/")
+        path.join("/tmp", "uploads", "course-images", file).replace(/\\/g, "/")
       );
 
       res.json(imagePaths);
@@ -1462,7 +1462,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ffmpeg.setFfprobePath(ffprobeStatic.path);
 
             const videoPath = videoUrl.startsWith("/uploads")
-              ? path.join(projectRoot, videoUrl)
+              ? path.join("/tmp", videoUrl)
               : videoUrl;
 
             await new Promise<void>((resolve, reject) => {
@@ -3512,7 +3512,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       doc.pipe(res);
       // Load custom background template
 
-      const certImagePath = path.join(projectRoot, "uploads", "temp.png");
+      const certImagePath = path.join("/tmp", "uploads", "temp.png");
       if (fs.existsSync(certImagePath)) {
         doc.image(certImagePath, 0, 0, {
           width: doc.page.width,

@@ -49,7 +49,7 @@ app.use((req, res, next) => {
 // --- Serve Uploaded Files ---
 // Serve files from the 'uploads' directory (relative to project root)
 // Adjust '..' if server/index.ts is nested deeper (e.g., src/server/index.ts needs '../..')
-const uploadsDir = path.join(__dirname, "..", "uploads");
+const uploadsDir = path.join("/tmp", "uploads");
 app.use("/uploads", express.static(uploadsDir));
 // --- End Serve Uploaded Files ---
 
