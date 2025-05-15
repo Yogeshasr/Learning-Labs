@@ -60,11 +60,11 @@ const fetchCourseImages = async (
         images = data;
       }
 
-      if (images.length < minCount) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      } else {
-        break;
-      }
+      // if (images.length < minCount) {
+      //   await new Promise((resolve) => setTimeout(resolve, delay));
+      // } else {
+      //   break;
+      // }
     } catch (err) {
       console.error("Error fetching images:", err);
       break;
