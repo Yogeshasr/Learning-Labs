@@ -23,6 +23,7 @@ import { Loader2 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
+const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 const courseFormSchema = z.object({
   title: z.string().min(5, { message: "Title must be at least 5 characters." }),
   description: z
@@ -57,7 +58,6 @@ const fetchCourseImages = async (
       const data: string[] = await response.json();
 
       if (data.length > images.length) {
-        console.log("data from course images", data);
         images = data;
       }
 
@@ -135,10 +135,7 @@ export function CourseForm({
 
   const handleSubmit = async (data: CourseFormData) => {
     const fullThumbnailUrl = data.thumbnail
-      ? `${process.env.SERVER_URL}${data.thumbnail}`.replace(
-          /(?<!:)\/{2,}/g,
-          "/"
-        )
+      ? `${SERVER_URL}${data.thumbnail}`.replace(/(?<!:)\/{2,}/g, "/")
       : "";
 
     await onSubmit({ ...data, thumbnail: fullThumbnailUrl });
@@ -233,7 +230,7 @@ export function CourseForm({
                       letterSpacing: "0.5px",
                     }}
                   >
-                    AI{field.value}
+                    AI
                   </span>
                 </FormLabel>
                 <FormControl>
@@ -256,7 +253,7 @@ export function CourseForm({
                             }`}
                           >
                             <img
-                              src={`${process.env.SERVER_URL}${path}`}
+                              src={`${SERVER_URL}${path}`}
                               alt={`Thumbnail ${index + 1}`}
                               className="w-full h-48 object-cover"
                             />

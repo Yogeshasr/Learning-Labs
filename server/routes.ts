@@ -999,7 +999,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Map to full relative paths (or URLs if serving statically)
       const imagePaths = matchingFiles.map((file) =>
-        path.join("uploads", "course-images", file).replace(/\\/g, "/")
+        path.join("/uploads", "course-images", file).replace(/\\/g, "/")
       );
 
       res.json(imagePaths);
