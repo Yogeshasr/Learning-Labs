@@ -49,27 +49,28 @@ const fetchCourseImages = async (
 ): Promise<string[]> => {
   let images: string[] = [];
 
-  // while (images.length < minCount) {
-  try {
-    const response = await fetch(
-      `/api/course-images/${courseId}/${courseName}`
-    );
-    const data: string[] = await response.json();
+  while (images.length < minCount) {
+    try {
+      const response = await fetch(
+        `/api/course-images/${courseId}/${courseName}`
+      );
+      const data: string[] = await response.json();
 
-    if (data.length > images.length) {
-      images = data;
+      if (data.length > images.length) {
+        console.log("data from course images", data);
+        images = data;
+      }
+
+      if (images.length < minCount) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        break;
+      }
+    } catch (err) {
+      console.error("Error fetching images:", err);
+      break;
     }
-
-    // if (images.length < minCount) {
-    //   await new Promise((resolve) => setTimeout(resolve, delay));
-    // } else {
-    // break;
-    // }
-  } catch (err) {
-    console.error("Error fetching images:", err);
-    // break;
   }
-  // }
 
   return images;
 };

@@ -999,7 +999,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Map to full relative paths (or URLs if serving statically)
       const imagePaths = matchingFiles.map((file) =>
-        path.join("/tmp", "uploads", "course-images", file).replace(/\\/g, "/")
+        path.join("uploads", "course-images", file).replace(/\\/g, "/")
       );
 
       res.json(imagePaths);
@@ -4207,7 +4207,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!req.file) {
         return res.status(400).json({ message: "No image file uploaded." });
       }
-      const imageUrl = `/uploads/images/${req.file.filename}`;
+      const imageUrl = `/uploads/course-images/${req.file.filename}`;
       res
         .status(201)
         .json({ message: "Image uploaded successfully", imageUrl });
