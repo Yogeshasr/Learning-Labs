@@ -233,7 +233,7 @@ export function CourseForm({
                       letterSpacing: "0.5px",
                     }}
                   >
-                    AI
+                    AI(field.value)
                   </span>
                 </FormLabel>
                 <FormControl>
