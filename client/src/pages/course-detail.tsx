@@ -170,7 +170,7 @@ export default function CourseDetail() {
   useEffect(() => {
     if (!courseId) return;
 
-    fetch(`http://localhost:5001/api/course-summaries/${courseId}`)
+    fetch(`${process.env.PYTHON_SERVER}api/course-summaries/${courseId}`)
       .then(async (res) => {
         if (!res.ok) {
           const text = await res.text();
@@ -444,7 +444,7 @@ export default function CourseDetail() {
         //     `/course-content?id=${course.id}&moduleId=${firstModule.id}&lessonId=${firstLesson.id}`
         //   );
         // } else {
-          setLocation(`/course-content?id=${course.id}`);
+        setLocation(`/course-content?id=${course.id}`);
         // }
       } else {
         setLocation(`/my-courses`);

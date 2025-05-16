@@ -1091,7 +1091,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.status(201).json(newCourse);
 
         try {
-          await axios.post("http://localhost:5001/generate_image", {
+          await axios.post(`${process.env.PYTHON_SERVER}generate_image`, {
             course_id: newCourse.id,
             course_title: title,
             course_description: description,
@@ -1171,7 +1171,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         res.json(updatedCourse);
         try {
-          await axios.post("http://localhost:5001/insert_questions", {
+          await axios.post(`${process.env.PYTHON_SERVER}insert_questions`, {
             course_id: courseId,
           });
         } catch (error) {
@@ -3635,7 +3635,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .fontSize(10)
 
         .text(
-          `Verify at: http://localhost:5000/public/certificate/${certId}`,
+          `Verify at: ${process.env.PYTHON_SERVER}public/certificate/${certId}`,
           centerX - 200,
           500
         );
@@ -4147,7 +4147,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let recommendedCourses = [];
       try {
         const flaskResponse = await axios.post(
-          "http://localhost:5001/recommend",
+          `${process.env.PYTHON_SERVER}recommend`,
           {
             role: userRole,
             user_id: userId,

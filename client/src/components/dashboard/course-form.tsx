@@ -49,27 +49,27 @@ const fetchCourseImages = async (
 ): Promise<string[]> => {
   let images: string[] = [];
 
-  while (images.length < minCount) {
-    try {
-      const response = await fetch(
-        `/api/course-images/${courseId}/${courseName}`
-      );
-      const data: string[] = await response.json();
+  // while (images.length < minCount) {
+  try {
+    const response = await fetch(
+      `/api/course-images/${courseId}/${courseName}`
+    );
+    const data: string[] = await response.json();
 
-      if (data.length > images.length) {
-        images = data;
-      }
-
-      // if (images.length < minCount) {
-      //   await new Promise((resolve) => setTimeout(resolve, delay));
-      // } else {
-      break;
-      // }
-    } catch (err) {
-      console.error("Error fetching images:", err);
-      break;
+    if (data.length > images.length) {
+      images = data;
     }
+
+    // if (images.length < minCount) {
+    //   await new Promise((resolve) => setTimeout(resolve, delay));
+    // } else {
+    // break;
+    // }
+  } catch (err) {
+    console.error("Error fetching images:", err);
+    // break;
   }
+  // }
 
   return images;
 };
@@ -134,7 +134,10 @@ export function CourseForm({
 
   const handleSubmit = async (data: CourseFormData) => {
     const fullThumbnailUrl = data.thumbnail
-      ? `http://localhost:5000/${data.thumbnail}`.replace(/(?<!:)\/{2,}/g, "/")
+      ? `${process.env.SERVER_URL}${data.thumbnail}`.replace(
+          /(?<!:)\/{2,}/g,
+          "/"
+        )
       : "";
 
     await onSubmit({ ...data, thumbnail: fullThumbnailUrl });
@@ -252,7 +255,7 @@ export function CourseForm({
                             }`}
                           >
                             <img
-                              src={`http://localhost:5000/${path}`}
+                              src={`${process.env.SERVER_URL}${path}`}
                               alt={`Thumbnail ${index + 1}`}
                               className="w-full h-48 object-cover"
                             />
