@@ -4192,5 +4192,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post(
+    "/upload-image",
+    // add your auth middlewares if needed, e.g. isAuthenticated, hasRole([...])
+    uploadImage.single("image"),
+    (req, res) => {
+      if (!req.file) {
+        return res.status(400).json({ message: "No image file uploaded." });
+      }
+      const imageUrl = `/uploads/images/${req.file.filename}`;
+      res
+        .status(201)
+        .json({ message: "Image uploaded successfully", imageUrl });
+    }
+  );
+
   return httpServer;
 }
