@@ -39,6 +39,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
+const PYTHON_SERVER = import.meta.env.VITE_PYTHON_SERVER;
+
 // --- Types ---
 type Instructor = {
   id: number;
@@ -170,7 +172,7 @@ export default function CourseDetail() {
   useEffect(() => {
     if (!courseId) return;
 
-    fetch(`${process.env.PYTHON_SERVER}api/course-summaries/${courseId}`)
+    fetch(`${PYTHON_SERVER}api/course-summaries/${courseId}`)
       .then(async (res) => {
         if (!res.ok) {
           const text = await res.text();
