@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Sparkles, X, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+const PYTHON_SERVER = import.meta.env.VITE_PYTHON_SERVER;
 
 export default function ChatbotWidget(props) {
   const [open, setOpen] = useState(false);
@@ -29,7 +30,7 @@ export default function ChatbotWidget(props) {
     setLoading(true); // Set loading to true when sending message
 
     try {
-      const res = await fetch("http://127.0.0.1:5001/api/chat", {
+      const res = await fetch(`${PYTHON_SERVER}api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -91,7 +92,11 @@ export default function ChatbotWidget(props) {
             {messages.map((msg) => (
               <div
                 key={msg.text}
-                className={msg.sender === "user" ? "flex justify-end" : "flex justify-start"}
+                className={
+                  msg.sender === "user"
+                    ? "flex justify-end"
+                    : "flex justify-start"
+                }
               >
                 <div
                   className={`px-3 py-2 rounded-lg max-w-[80%] text-sm whitespace-pre-wrap ${
@@ -107,7 +112,9 @@ export default function ChatbotWidget(props) {
                         code: ({ node, className, children, ...props }) => {
                           return (
                             <pre className="bg-muted dark:bg-gray-700 p-3 rounded-md my-2 overflow-auto">
-                              <code className="text-foreground dark:text-gray-200">{children}</code>
+                              <code className="text-foreground dark:text-gray-200">
+                                {children}
+                              </code>
                             </pre>
                           );
                         },
@@ -120,7 +127,7 @@ export default function ChatbotWidget(props) {
                   )}
                 </div>
               </div>
-            ))}   
+            ))}
 
             {/* Show loading message when bot is processing */}
             {loading && (
