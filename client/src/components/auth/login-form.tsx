@@ -22,12 +22,11 @@ import { jwtDecode } from "jwt-decode";
 import { useMsal } from "@azure/msal-react";
 import { useErrorHandler } from "@/hooks/use-error-handler";
 
-import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
-
-
+import { GoogleOAuthProvider, useGoogleLogin } from "@react-oauth/google";
 
 const clientId =
-  "986989868035-bbbpdr11ndnft9igim3p4oj5ha9mc658.apps.googleusercontent.com";
+  // "986989868035-bbbpdr11ndnft9igim3p4oj5ha9mc658.apps.googleusercontent.com";
+  "973107853415-a1p0ooee2gf21hiu3pbnmkcl5gi1qvlq.apps.googleusercontent.com";
 
 const formSchema = z.object({
   email: z.string().email("Invalid email address"),
@@ -169,7 +168,7 @@ export function LoginForm() {
       const accessToken = response.access_token;
 
       // Fetch user info using the access token
-      const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
@@ -224,7 +223,7 @@ export function LoginForm() {
 
   function CustomGoogleButton() {
     const login = useGoogleLogin({
-      onSuccess: tokenResponse => handleGoogleLoginSuccess(tokenResponse),
+      onSuccess: (tokenResponse) => handleGoogleLoginSuccess(tokenResponse),
       onError: () => handleGoogleLoginFailure(),
     });
 
@@ -237,11 +236,27 @@ export function LoginForm() {
                    dark:bg-[#0f172a] dark:text-white dark:border-gray-600 dark:hover:bg-[#1e293b]"
       >
         <span className="absolute left-4 flex items-center">
-          <svg className="w-5 h-5" viewBox="0 0 533.5 544.3" xmlns="http://www.w3.org/2000/svg">
-            <path fill="#4285F4" d="M533.5 278.4c0-17.4-1.4-34.1-4.1-50.3H272.1v95.2h146.9c-6.3 34.1-25.1 62.9-53.5 82.3v68h86.6c50.7-46.7 81.4-115.6 81.4-195.2z" />
-            <path fill="#34A853" d="M272.1 544.3c72.6 0 133.6-24 178.2-65.2l-86.6-68c-24 16.2-54.6 25.6-91.6 25.6-70.5 0-130.2-47.6-151.6-111.4H32.5v69.9c44.8 88.6 137.4 149.1 239.6 149.1z" />
-            <path fill="#FBBC05" d="M120.5 325.3c-10.8-32.1-10.8-66.6 0-98.7V156.7H32.5c-36.4 70.3-36.4 153.7 0 224l88-55.4z" />
-            <path fill="#EA4335" d="M272.1 107.7c39.4-.6 77 13.5 106 39.2l79.2-79.2C407.5 24.6 344.8 0 272.1 0 169.9 0 77.3 60.5 32.5 149.1l88 55.4c21.5-63.8 81.1-111.4 151.6-111.4z" />
+          <svg
+            className="w-5 h-5"
+            viewBox="0 0 533.5 544.3"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              fill="#4285F4"
+              d="M533.5 278.4c0-17.4-1.4-34.1-4.1-50.3H272.1v95.2h146.9c-6.3 34.1-25.1 62.9-53.5 82.3v68h86.6c50.7-46.7 81.4-115.6 81.4-195.2z"
+            />
+            <path
+              fill="#34A853"
+              d="M272.1 544.3c72.6 0 133.6-24 178.2-65.2l-86.6-68c-24 16.2-54.6 25.6-91.6 25.6-70.5 0-130.2-47.6-151.6-111.4H32.5v69.9c44.8 88.6 137.4 149.1 239.6 149.1z"
+            />
+            <path
+              fill="#FBBC05"
+              d="M120.5 325.3c-10.8-32.1-10.8-66.6 0-98.7V156.7H32.5c-36.4 70.3-36.4 153.7 0 224l88-55.4z"
+            />
+            <path
+              fill="#EA4335"
+              d="M272.1 107.7c39.4-.6 77 13.5 106 39.2l79.2-79.2C407.5 24.6 344.8 0 272.1 0 169.9 0 77.3 60.5 32.5 149.1l88 55.4c21.5-63.8 81.1-111.4 151.6-111.4z"
+            />
           </svg>
         </span>
         <span className="ml-6">Sign in with Google</span>
@@ -396,7 +411,6 @@ export function LoginForm() {
         <span className="ml-6 dark:text-white">Sign in with Microsoft</span>
       </Button>
 
-
       {/* <GoogleOAuthProvider clientId={clientId}>
         <GoogleLogin
           onSuccess={handleGoogleLoginSuccess}
@@ -407,8 +421,6 @@ export function LoginForm() {
       <GoogleOAuthProvider clientId={clientId}>
         <CustomGoogleButton />
       </GoogleOAuthProvider>
-
-
     </Form>
   );
 }
