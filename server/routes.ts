@@ -96,6 +96,30 @@ const uploadImage = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
 });
 
+const vttStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, path.join(__dirname, "../uploads/vtt"));
+  },
+  filename: (req, file, cb) => {
+    // e.g., video-<timestamp>.vtt or preserve original stem
+    const timestamp = Date.now();
+    const ext = path.extname(file.originalname);
+    const basename = path.basename(file.originalname, ext);
+    cb(null, `${basename}-${timestamp}${ext}`);
+  },
+});
+
+// Filter to accept only .vtt MIME/type
+const vttFilter = (req, file, cb) => {
+  if (path.extname(file.originalname).toLowerCase() === ".vtt") {
+    cb(null, true);
+  } else {
+    cb(new Error("Only .vtt files are allowed"), false);
+  }
+};
+
+const uploadVtt = multer({ storage: vttStorage, fileFilter: vttFilter });
+
 const resourceStorage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, resourceUploadDir);
@@ -4211,6 +4235,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res
         .status(201)
         .json({ message: "Image uploaded successfully", imageUrl });
+    }
+  );
+
+  app.post(
+    "/api/upload/vtt",
+    isAuthenticated,
+    uploadVtt.single("file"),
+    (req, res) => {
+      console.log("<----- vtt upload api is called from python ---->");
+      if (!req.file) {
+        return res.status(400).json({ message: "No VTT file uploaded." });
+      }
+      // Build the public URL for clients
+      const vttUrl = `/uploads/vtt/${req.file.filename}`;
+      console.log("<----- looks like vtt saved ---->");
+      res.status(201).json({ message: "VTT uploaded successfully", vttUrl });
     }
   );
 
