@@ -98,7 +98,7 @@ const uploadImage = multer({
 
 const vttStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, "../uploads/vtt"));
+    cb(null, path.join(__dirname, "../uploads/captions"));
   },
   filename: (req, file, cb) => {
     // e.g., video-<timestamp>.vtt or preserve original stem
