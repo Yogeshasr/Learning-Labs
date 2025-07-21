@@ -139,20 +139,20 @@ export function Header({ onMobileMenuToggle }: HeaderProps) {
             href="/"
             className="flex-shrink-0 flex items-center ml-0 lg:ml-0"
           >
-            <img
-              src="../../../alten_black.png"
+            {/* <img
+              // src="../../../alten_black.png"
               className="mt-1 mr-2 ml-[-30px] dark:hidden"
               title="Alten Global Technologies Private Limited"
               alt="Alten Global Technologies Private Limited"
               width="130"
             />
             <img
-              src="../../../alten_W.png"
+              // src="../../../alten_W.png"
               className="mt-1 mr-2 ml-[-30px] hidden dark:block"
               title="Alten Global Technologies Private Limited"
               alt="Alten Global Technologies Private Limited"
               width="130"
-            />
+            /> */}
 
             {/* <span className="hidden sm:inline text-2xl font-semibold bg-gradient-to-r from-blue-700 via-purple-700 to-black bg-clip-text text-transparent font-[Roboto] tracking-wide dark:from-blue-600 dark:via-purple-600 dark:to-blue-800 dark:text-transparent mt-1">
               Learning Labs
