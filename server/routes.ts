@@ -3628,15 +3628,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Signature
 
-      doc
-        .font("Helvetica-Oblique")
-        .fontSize(12)
-        .fillColor("black")
+      // doc
+      //   .font("Helvetica-Oblique")
+      //   .fontSize(12)
+      //   .fillColor("black")
 
-        .text("Alten Global Technologies", centerX - 200, 400, {
-          width: 400,
-          align: "center",
-        });
+      //   .text("Alten Global Technologies", centerX - 200, 400, {
+      //     width: 400,
+      //     align: "center",
+      //   });
 
       doc
         .font("Helvetica")
